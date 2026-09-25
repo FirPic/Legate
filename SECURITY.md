@@ -13,7 +13,7 @@ Security updates and patches are actively maintained for the following versions:
 
 ## Reporting a Vulnerability
 
-We take the security of `acme-dns-httpreq-proxy` seriously. If you discover a security vulnerability, please follow responsible disclosure guidelines.
+We take the security of `legate` seriously. If you discover a security vulnerability, please follow responsible disclosure guidelines.
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 

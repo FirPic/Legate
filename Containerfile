@@ -36,6 +36,9 @@ COPY --from=builder /bin/legate /usr/local/bin/legate
 # Run as nonroot user (UID 65532)
 USER nonroot:nonroot
 
-EXPOSE 8080
+EXPOSE 8080 9090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/legate", "--version"]
 
 ENTRYPOINT ["/usr/local/bin/legate"]
