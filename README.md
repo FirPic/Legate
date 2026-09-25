@@ -1,38 +1,40 @@
-# acme-dns-httpreq-proxy
+# Legate
 
-[![CI](https://github.com/FirPic/acme-dns-httpreq-proxy/actions/workflows/ci.yaml/badge.svg)](https://github.com/FirPic/acme-dns-httpreq-proxy/actions/workflows/ci.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/FirPic/acme-dns-httpreq-proxy)](https://goreportcard.com/report/github.com/FirPic/acme-dns-httpreq-proxy)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/FirPic/legate/actions/workflows/ci.yaml/badge.svg)](https://github.com/FirPic/legate/actions/workflows/ci.yaml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/FirPic/legate)](https://goreportcard.com/report/github.com/FirPic/legate)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org)
 
-A lightweight, zero-dependency, cloud-native HTTP proxy written in Go that securely relays ACME DNS-01 challenges from Lego's [`httpreq`](https://go-acme.github.io/lego/dns/httpreq/) provider (as used by **Traefik**, **Caddy**, and **Lego**) to upstream DNS providers (**Cloudflare**, **IONOS**, **Infomaniak**).
+**Legate** is a lightweight, zero-dependency ACME DNS-01 challenge gateway written in Go. It securely relays ACME DNS-01 challenges from Lego's [`httpreq`](https://go-acme.github.io/lego/dns/httpreq/) provider (as used by **Traefik**, **Caddy**, and **Lego**) to upstream DNS providers (**Cloudflare**, **IONOS**, **Infomaniak**).
 
 ---
 
-## Why this Proxy?
+## Why Legate?
 
-In hardened, multi-tier network architectures (e.g. DMZ / Internal VLANs conforming to cybersecurity standards such as **ANSSI BP-028 v2.0 MIE**), edge reverse proxies should **never** hold broad Cloudflare API tokens capable of modifying your entire DNS zone.
+In hardened, multi-tier network architectures (e.g. DMZ / Internal VLANs conforming to cybersecurity standards such as **ANSSI BP-028 v2.0 MIE**), edge reverse proxies should **never** hold broad DNS API tokens capable of modifying your entire DNS zone.
 
-By placing `acme-dns-httpreq-proxy` in an isolated, restricted security zone:
+By placing `legate` in an isolated, restricted security zone:
 
 ```text
 ┌─────────────────────────┐       HTTP Basic Auth         ┌─────────────────────────┐
-│     Traefik / Caddy     │ ────────────────────────────> │ acme-dns-httpreq-proxy  │
+│     Traefik / Caddy     │ ────────────────────────────> │        Legate           │
 │      (DMZ / Edge)       │   POST /present, /cleanup     │  (Restricted Sec Zone)  │
-│   No Cloudflare Token   │                               │ Holds Cloudflare Token  │
+│   No DNS API Tokens     │                               │  Holds DNS API Tokens   │
 └─────────────────────────┘                               └─────────────────────────┘
                                                                        │
-                                                                       │ Cloudflare API v4
-                                                                       v
-                                                          ┌─────────────────────────┐
-                                                          │   Cloudflare DNS Zone   │
-                                                          └─────────────────────────┘
+                                                          ┌────────────┴────────────┐
+                                                          │                         │
+                                                          v                         v
+                                             ┌────────────────────┐  ┌─────────────────────┐
+                                             │  Cloudflare DNS    │  │   IONOS / Infomaniak│
+                                             └────────────────────┘  └─────────────────────┘
 ```
 
-- 🔒 **Confined Scope**: Only the proxy holds the Cloudflare API token. Edge reverse proxies only hold local Basic Auth credentials.
-- 🛡️ **Strict FQDN Validation**: Rejects any challenge that does not strictly match `_acme-challenge.<allowed_domain>` or its legitimate subdomains. Traefik cannot create or alter arbitrary DNS records (such as `A`, `AAAA`, `MX`, or `CNAME`).
+- 🔒 **Confined Scope**: Only Legate holds DNS API tokens. Edge reverse proxies only hold local Basic Auth credentials.
+- 🛡️ **Strict FQDN Validation**: Rejects any challenge that does not strictly match `_acme-challenge.<allowed_domain>` or its legitimate subdomains. Clients cannot create or alter arbitrary DNS records (such as `A`, `AAAA`, `MX`, or `CNAME`).
 - ⚡ **Zero Third-Party Dependencies**: Pure Go standard library (`net/http`, `log/slog`, `crypto/subtle`, `sync`) with official Prometheus metrics export.
-- 🔀 **Collision-Proof Concurrency**: Concurrency-safe in-memory tracking pairs each `(fqdn, value)` challenge with its unique Cloudflare record ID. Concurrent certificate renewals across multiple reverse proxies never conflict or delete each other's records.
+- 🔀 **Collision-Proof Concurrency**: Concurrency-safe in-memory tracking pairs each `(fqdn, value)` challenge with its unique DNS record ID. Concurrent certificate renewals across multiple reverse proxies never conflict.
+- 🌐 **Multi-Provider**: Single instance can manage ACME challenges across multiple domains and multiple DNS providers simultaneously.
 
 ---
 
@@ -42,19 +44,19 @@ Launch the container with Docker or Podman:
 
 ```bash
 docker run -d \
-  --name acme-dns-proxy \
+  --name legate \
   -p 8080:8080 \
   -e CLOUDFLARE_API_TOKEN="your-cloudflare-api-token" \
   -e ALLOWED_DOMAIN="example.com" \
   -e USERS="traefik:StrongPassword123" \
-  ghcr.io/firpic/acme-dns-httpreq-proxy:latest
+  ghcr.io/firpic/legate:latest
 ```
 
 Verify service liveness:
 
 ```bash
-curl -s http://localhost:8080/healthz
-# {"allowed_domain":"example.com","allowed_domains":["example.com"],"status":"ok","tracked_records":0}
+curl -s http://localhost:9090/healthz
+# {"allowed_domains":["example.com"],"status":"ok","tracked_records":0}
 ```
 
 ---
@@ -105,13 +107,13 @@ users:
 Run with configuration file:
 
 ```bash
-./acme-dns-proxy --config /path/to/config.yaml
+./legate --config /path/to/config.yaml
 # Or via environment variable:
-CONFIG_FILE=/path/to/config.yaml ./acme-dns-proxy
+CONFIG_FILE=/path/to/config.yaml ./legate
 ```
 
 > [!NOTE]
-> Backward compatibility: If no configuration file is specified, `acme-dns-httpreq-proxy` automatically falls back to single-provider environment variable configuration (`CLOUDFLARE_API_TOKEN`, `ALLOWED_DOMAIN`, etc.).
+> Backward compatibility: If no configuration file is specified, Legate automatically falls back to single-provider environment variable configuration (`CLOUDFLARE_API_TOKEN`, `ALLOWED_DOMAIN`, etc.).
 
 ---
 
@@ -135,11 +137,12 @@ Our documentation is structured according to the **Diátaxis framework** for cla
 ## Features
 
 - **Standard Lego `httpreq` Compatibility**: Implements `POST /present` and `POST /cleanup` in both standard mode (`fqdn` + `value`) and raw mode (`domain` + `token` + `keyAuth`).
+- **Multi-Provider Support**: Cloudflare, IONOS, Infomaniak — all in pure Go standard library with no external SDKs.
 - **Timing Attack Resistant**: Constant-time authentication comparisons (`crypto/subtle.ConstantTimeCompare`) with dummy hash evaluation against user enumeration.
 - **RFC 1123 Strict Domain Validation**: Forbids CRLF, null bytes, backslashes, path traversal, and domain spoofing.
 - **Production Observability**:
   - Structured JSON logging via standard Go `log/slog`.
-  - Prometheus metrics on `/metrics` (`acme_dns_challenges_total`, `acme_dns_active_records`, `acme_dns_cloudflare_requests_total`, `acme_dns_request_duration_seconds`).
+  - Prometheus metrics on `/metrics` (`acme_dns_challenges_total`, `acme_dns_active_records`, `acme_dns_provider_requests_total`, `acme_dns_request_duration_seconds`).
   - Liveness and readiness probe on `/healthz`.
   - Graceful shutdown handling `SIGINT` and `SIGTERM`.
 
@@ -155,4 +158,6 @@ We welcome contributions! Please review:
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
+
+Copyright (C) 2026 FirPic
