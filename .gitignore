@@ -2,6 +2,7 @@
 /server
 /acme-dns-proxy
 /acme-dns-httpreq-proxy
+/legate
 /dist/
 /bin/
 *.exe

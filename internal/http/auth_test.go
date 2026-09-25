@@ -11,13 +11,22 @@ import (
 )
 
 func TestAuthenticator_Verify(t *testing.T) {
+	hash1, err := HashPassword("strongpassword1")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+	hash2, err := HashPassword("strongpassword2")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
 	users := map[string]config.UserConfig{
 		"traefik_dmz": {
-			Password:          "strongpassword1",
+			Password:          hash1,
 			AllowedSubdomains: []string{"*.dmz.firpic.fr", "dmz.firpic.fr"},
 		},
 		"traefik_infra": {
-			Password:          "strongpassword2",
+			Password:          hash2,
 			AllowedSubdomains: []string{"*"},
 		},
 		"traefik_argon": {
@@ -90,9 +99,14 @@ func TestAuthenticator_Verify(t *testing.T) {
 }
 
 func TestAuthenticator_Middleware(t *testing.T) {
+	hashTraefik, err := HashPassword("secret123")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
 	users := map[string]config.UserConfig{
 		"traefik": {
-			Password:          "secret123",
+			Password:          hashTraefik,
 			AllowedSubdomains: []string{"*.dmz.firpic.fr"},
 		},
 	}
@@ -148,8 +162,13 @@ func TestAuthenticator_Middleware(t *testing.T) {
 	}
 
 	// 5. Basic auth with colon in password
+	hashColons, err := HashPassword("pass:with:colons")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
 	users["user2"] = config.UserConfig{
-		Password:          "pass:with:colons",
+		Password:          hashColons,
 		AllowedSubdomains: []string{"*"},
 	}
 	auth2 := NewAuthenticator(users)

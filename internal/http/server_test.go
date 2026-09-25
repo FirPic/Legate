@@ -62,15 +62,23 @@ func (m *mockDNSProvider) Cleanup(ctx context.Context, fqdn, recordID, value str
 	return nil
 }
 
+func mustHash(pass string) string {
+	h, err := HashPassword(pass)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
 func setupTestServer() (*Server, *mockDNSProvider, *tracker.Tracker, *Metrics) {
 	allowedDomain := "firpic.fr"
 	users := map[string]config.UserConfig{
 		"traefik_dmz": {
-			Password:          "secret123",
+			Password:          mustHash("secret123"),
 			AllowedSubdomains: []string{"*.dmz.firpic.fr", "dmz.firpic.fr"},
 		},
 		"admin": {
-			Password:          "adminsecret",
+			Password:          mustHash("adminsecret"),
 			AllowedSubdomains: []string{"*"},
 		},
 	}
@@ -265,11 +273,11 @@ func TestRateLimiter(t *testing.T) {
 	allowedDomain := "firpic.fr"
 	users := map[string]config.UserConfig{
 		"traefik_dmz": {
-			Password:          "secret123",
+			Password:          mustHash("secret123"),
 			AllowedSubdomains: []string{"*"},
 		},
 		"other_user": {
-			Password:          "otherpass",
+			Password:          mustHash("otherpass"),
 			AllowedSubdomains: []string{"*"},
 		},
 	}
@@ -330,7 +338,7 @@ func TestRateLimiter(t *testing.T) {
 func TestIPRateLimiter_PreAuthBruteForce(t *testing.T) {
 	users := map[string]config.UserConfig{
 		"traefik_dmz": {
-			Password:          "secret123",
+			Password:          mustHash("secret123"),
 			AllowedSubdomains: []string{"*"},
 		},
 	}
@@ -427,7 +435,7 @@ func TestMultiDomainProviderRouting(t *testing.T) {
 
 	users := map[string]config.UserConfig{
 		"admin": {
-			Password:          "secret",
+			Password:          mustHash("secret"),
 			AllowedSubdomains: []string{"*"},
 		},
 	}

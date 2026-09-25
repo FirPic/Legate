@@ -2,8 +2,6 @@ package http
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -16,7 +14,6 @@ type contextKey string
 
 const (
 	authContextKey contextKey = "auth_context"
-	dummySecret               = "invalid-dummy-password-for-constant-time-comparison-protection"
 )
 
 // AuthContext holds the verified identity and RBAC boundaries of an authenticated request.
@@ -25,31 +22,24 @@ type AuthContext struct {
 	AllowedSubdomains []string
 }
 
-// Authenticator handles HTTP Basic Authentication using constant-time hashed comparisons.
+// Authenticator handles HTTP Basic Authentication using constant-time Argon2id hashed comparisons.
 type Authenticator struct {
-	users         map[string]config.UserConfig
-	hasArgonUsers bool
+	users map[string]config.UserConfig
 }
 
 // NewAuthenticator creates an Authenticator with a normalized map of user configurations.
 func NewAuthenticator(users map[string]config.UserConfig) *Authenticator {
 	copyUsers := make(map[string]config.UserConfig, len(users))
-	hasArgon := false
 	for u, cfg := range users {
 		copyUsers[strings.ToLower(strings.TrimSpace(u))] = cfg
-		if IsArgon2idHash(cfg.Password) {
-			hasArgon = true
-		}
 	}
 	return &Authenticator{
-		users:         copyUsers,
-		hasArgonUsers: hasArgon,
+		users: copyUsers,
 	}
 }
 
 // Verify checks the provided username and password.
-// If the stored password is an Argon2id hash ($argon2id$), it performs constant-time Argon2id verification.
-// Otherwise, it falls back to SHA-256 constant-time comparison for legacy plaintext passwords.
+// Only Argon2id hashes ($argon2id$) are permitted.
 // To prevent timing-based user enumeration, non-existent users trigger an evaluation of equal cryptographic cost.
 func (a *Authenticator) Verify(username, password string) (*config.UserConfig, bool) {
 	u := strings.ToLower(strings.TrimSpace(username))
@@ -61,26 +51,12 @@ func (a *Authenticator) Verify(username, password string) (*config.UserConfig, b
 			if err == nil && valid {
 				return &expectedCfg, true
 			}
-			return nil, false
-		}
-
-		// Legacy fallback: SHA-256 constant-time comparison
-		hProvided := sha256.Sum256([]byte(password))
-		hExpected := sha256.Sum256([]byte(expectedCfg.Password))
-		if subtle.ConstantTimeCompare(hProvided[:], hExpected[:]) == 1 {
-			return &expectedCfg, true
 		}
 		return nil, false
 	}
 
-	// Prevent user enumeration by evaluating against a dummy password hash matching the realm's primary cipher
-	if a.hasArgonUsers {
-		_, _ = VerifyPassword(password, DummyArgon2idHash)
-	} else {
-		hProvided := sha256.Sum256([]byte(password))
-		hExpected := sha256.Sum256([]byte(dummySecret))
-		_ = subtle.ConstantTimeCompare(hProvided[:], hExpected[:])
-	}
+	// Prevent timing-based user enumeration by always evaluating against DummyArgon2idHash
+	_, _ = VerifyPassword(password, DummyArgon2idHash)
 	return nil, false
 }
 

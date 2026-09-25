@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,12 +31,17 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
+		runHashPassword(os.Args[2:])
+		return
+	}
+
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	configPath := flag.String("config", "", "Path to YAML configuration file (optional, defaults to environment variables)")
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("acme-dns-proxy version %s (commit: %s, built at: %s)\n", Version, Commit, Date)
+		fmt.Printf("legate version %s (commit: %s, built at: %s)\n", Version, Commit, Date)
 		os.Exit(0)
 	}
 
@@ -48,7 +55,7 @@ func main() {
 	// 2. Setup structured logging
 	initLogger(cfg.LogLevel)
 
-	slog.Info("starting acme-dns-proxy",
+	slog.Info("starting legate",
 		"version", Version,
 		"commit", Commit,
 		"bind_addr", cfg.BindAddr,
@@ -221,3 +228,45 @@ func initLogger(level string) {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, opts))
 	slog.SetDefault(logger)
 }
+
+func runHashPassword(args []string) {
+	var password string
+	if len(args) > 0 && args[0] != "" {
+		password = args[0]
+	} else {
+		stat, _ := os.Stdin.Stat()
+		if (stat.Mode() & os.ModeCharDevice) == 0 {
+			// Piped from stdin
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading from stdin: %v\n", err)
+				os.Exit(1)
+			}
+			password = strings.TrimRight(string(data), "\r\n")
+		} else {
+			// Interactive prompt
+			fmt.Fprint(os.Stderr, "Enter password to hash: ")
+			reader := bufio.NewReader(os.Stdin)
+			line, err := reader.ReadString('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				fmt.Fprintf(os.Stderr, "Error reading password: %v\n", err)
+				os.Exit(1)
+			}
+			password = strings.TrimRight(line, "\r\n")
+		}
+	}
+
+	if password == "" {
+		fmt.Fprintln(os.Stderr, "Error: password cannot be empty")
+		os.Exit(1)
+	}
+
+	hash, err := httpinternal.HashPassword(password)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error hashing password: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(hash)
+}
+
