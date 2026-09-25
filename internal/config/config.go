@@ -206,8 +206,7 @@ func LoadFromFile(filePath string) (*Config, error) {
 			return nil, fmt.Errorf("user %q has empty password", u)
 		}
 		if len(uCfg.AllowedSubdomains) == 0 {
-			uCfg.AllowedSubdomains = []string{"*"}
-			cfg.Users[u] = uCfg
+			return nil, fmt.Errorf("user %q: allowed_subdomains cannot be empty (must specify explicit domain patterns, e.g. '*.example.com')", u)
 		}
 	}
 

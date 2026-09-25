@@ -227,6 +227,13 @@ func TestValidateForUser(t *testing.T) {
 			fqdn:        "_acme-challenge.test.firpic.fr",
 			expectError: true,
 		},
+		{
+			name:        "Wildcard *.domain also authorizes apex domain",
+			user:        "app_user",
+			patterns:    []string{"*.firpic.fr"},
+			fqdn:        "_acme-challenge.firpic.fr",
+			expectError: false,
+		},
 	}
 
 	for _, tc := range testCases {

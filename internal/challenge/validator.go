@@ -123,7 +123,7 @@ func ValidateForUser(user string, reqFQDN string, allowedSubdomains []string) er
 
 		if strings.HasPrefix(p, "*.") {
 			base := strings.TrimPrefix(p, "*.")
-			if strings.HasSuffix(domainPart, "."+base) {
+			if domainPart == base || strings.HasSuffix(domainPart, "."+base) {
 				return nil
 			}
 		} else if domainPart == p {
