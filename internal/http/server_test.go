@@ -319,6 +319,58 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
+func TestIPRateLimiter_PreAuthBruteForce(t *testing.T) {
+	users := map[string]config.UserConfig{
+		"traefik_dmz": {
+			Password:          "secret123",
+			AllowedSubdomains: []string{"*"},
+		},
+	}
+	mockDNS := newMockDNSProvider()
+	tr := tracker.New()
+	reg := provider.NewRegistry()
+	_ = reg.Register("firpic.fr", mockDNS)
+
+	// Create server with 2 requests max for IP
+	srv := NewServerWithRateLimits(reg, users, tr, nil, 60, 2)
+
+	payload := challenge.PresentRequest{
+		FQDN:  "_acme-challenge.sub.firpic.fr",
+		Value: "val-1",
+	}
+	body, _ := json.Marshal(payload)
+
+	// 1st bad request -> 401
+	req1 := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req1.RemoteAddr = "203.0.113.10:45678"
+	req1.SetBasicAuth("traefik_dmz", "wrongpass1")
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusUnauthorized {
+		t.Fatalf("request 1 expected 401, got %d", rr1.Code)
+	}
+
+	// 2nd bad request -> 401
+	req2 := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req2.RemoteAddr = "203.0.113.10:45678"
+	req2.SetBasicAuth("traefik_dmz", "wrongpass2")
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusUnauthorized {
+		t.Fatalf("request 2 expected 401, got %d", rr2.Code)
+	}
+
+	// 3rd bad request -> 429 Too Many Requests (Pre-auth IP rate limiter kicked in)
+	req3 := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req3.RemoteAddr = "203.0.113.10:45678"
+	req3.SetBasicAuth("traefik_dmz", "wrongpass3")
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+	if rr3.Code != http.StatusTooManyRequests {
+		t.Fatalf("request 3 expected 429 Too Many Requests from IP, got %d", rr3.Code)
+	}
+}
+
 func TestCleanup_Success(t *testing.T) {
 	srv, mockDNS, tr, _ := setupTestServer()
 

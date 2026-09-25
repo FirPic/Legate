@@ -102,20 +102,43 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return false
 }
 
-// Middleware wraps an http.Handler with IP-based and user-based rate limiting.
-func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
+// IPMiddleware enforces rate limiting strictly based on the client's remote IP address.
+// This is used pre-authentication to prevent brute-force attacks and volumetric DoS.
+func (rl *RateLimiter) IPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Identify client by authenticated user (if known) or remote IP
-		clientKey := GetAuthUser(r)
-		if clientKey == "anonymous" || clientKey == "" {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = strings.TrimSpace(r.RemoteAddr)
+		}
+
+		if !rl.Allow(host) {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "error",
+				"error":  "rate limit exceeded: too many requests from this IP",
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// UserMiddleware enforces rate limiting based on the authenticated user identity.
+func (rl *RateLimiter) UserMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user := GetAuthUser(r)
+		if user == "" || user == "anonymous" {
 			host, _, err := net.SplitHostPort(r.RemoteAddr)
 			if err != nil {
 				host = strings.TrimSpace(r.RemoteAddr)
 			}
-			clientKey = host
+			user = host
 		}
 
-		if !rl.Allow(clientKey) {
+		if !rl.Allow(user) {
 			w.Header().Set("Retry-After", "1")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -128,4 +151,9 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Middleware wraps an http.Handler with rate limiting (defaults to UserMiddleware).
+func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
+	return rl.UserMiddleware(next)
 }

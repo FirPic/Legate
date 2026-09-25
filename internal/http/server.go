@@ -17,10 +17,11 @@ type Server struct {
 	registry    *provider.Registry
 	tracker     *tracker.Tracker
 	auth        *Authenticator
-	metrics     *Metrics
-	rateLimiter *RateLimiter
-	mux         *http.ServeMux
-	handler     http.Handler
+	metrics         *Metrics
+	userRateLimiter *RateLimiter
+	ipRateLimiter   *RateLimiter
+	mux             *http.ServeMux
+	handler         http.Handler
 }
 
 // NewServer builds and configures a new Server instance using a multi-domain provider Registry.
@@ -31,15 +32,33 @@ func NewServer(
 	m *Metrics,
 	rateLimitPerMinute int,
 ) *Server {
-	rl := NewRateLimiter(rateLimitPerMinute)
+	ipLimit := rateLimitPerMinute * 2
+	if ipLimit < 120 {
+		ipLimit = 120
+	}
+	return NewServerWithRateLimits(reg, users, tr, m, rateLimitPerMinute, ipLimit)
+}
+
+// NewServerWithRateLimits allows explicitly specifying both user and IP rate limits.
+func NewServerWithRateLimits(
+	reg *provider.Registry,
+	users map[string]config.UserConfig,
+	tr *tracker.Tracker,
+	m *Metrics,
+	userRateLimitPerMinute int,
+	ipRateLimitPerMinute int,
+) *Server {
+	userRL := NewRateLimiter(userRateLimitPerMinute)
+	ipRL := NewRateLimiter(ipRateLimitPerMinute)
 
 	s := &Server{
-		registry:    reg,
-		tracker:     tr,
-		auth:        NewAuthenticator(users),
-		metrics:     m,
-		rateLimiter: rl,
-		mux:         http.NewServeMux(),
+		registry:        reg,
+		tracker:         tr,
+		auth:            NewAuthenticator(users),
+		metrics:         m,
+		userRateLimiter: userRL,
+		ipRateLimiter:   ipRL,
+		mux:             http.NewServeMux(),
 	}
 
 	s.routes()
@@ -62,9 +81,12 @@ func NewSingleProviderServer(
 }
 
 func (s *Server) routes() {
-	// Protected Lego httpreq challenge endpoints: Authenticate first, then enforce per-user Rate Limiting
-	presentChain := s.auth.Middleware(s.rateLimiter.Middleware(http.HandlerFunc(s.handlePresent)))
-	cleanupChain := s.auth.Middleware(s.rateLimiter.Middleware(http.HandlerFunc(s.handleCleanup)))
+	// Defense in depth:
+	// 1. IP rate limiting (pre-auth) to prevent brute-force attacks and volumetric DoS
+	// 2. HTTP Basic Authentication
+	// 3. User rate limiting (post-auth) to isolate per-user quotas
+	presentChain := s.ipRateLimiter.IPMiddleware(s.auth.Middleware(s.userRateLimiter.UserMiddleware(http.HandlerFunc(s.handlePresent))))
+	cleanupChain := s.ipRateLimiter.IPMiddleware(s.auth.Middleware(s.userRateLimiter.UserMiddleware(http.HandlerFunc(s.handleCleanup))))
 
 	s.mux.Handle("POST /present", presentChain)
 	s.mux.Handle("POST /cleanup", cleanupChain)
