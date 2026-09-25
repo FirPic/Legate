@@ -79,7 +79,7 @@ func setupTestServer() (*Server, *mockDNSProvider, *tracker.Tracker, *Metrics) {
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg, func() float64 { return float64(tr.Count()) })
 
-	srv := NewServer(allowedDomain, users, mockDNS, tr, m, 600)
+	srv := NewSingleProviderServer(allowedDomain, users, mockDNS, tr, m, 600)
 	return srv, mockDNS, tr, m
 }
 
@@ -261,7 +261,7 @@ func TestRateLimiter(t *testing.T) {
 	m := NewMetrics(reg, nil)
 
 	// Rate limit: 2 requests per minute
-	srv := NewServer(allowedDomain, users, mockDNS, tr, m, 2)
+	srv := NewSingleProviderServer(allowedDomain, users, mockDNS, tr, m, 2)
 
 	payload := challenge.PresentRequest{
 		FQDN:  "_acme-challenge.sub.firpic.fr",
@@ -333,3 +333,75 @@ func TestCleanup_Success(t *testing.T) {
 		t.Errorf("record should be deleted from tracker")
 	}
 }
+
+func TestMultiDomainProviderRouting(t *testing.T) {
+	provA := newMockDNSProvider()
+	provB := newMockDNSProvider()
+
+	reg := provider.NewRegistry()
+	if err := reg.Register("domain-a.com", provA); err != nil {
+		t.Fatalf("register domain-a error: %v", err)
+	}
+	if err := reg.Register("domain-b.org", provB); err != nil {
+		t.Fatalf("register domain-b error: %v", err)
+	}
+
+	users := map[string]config.UserConfig{
+		"admin": {
+			Password:          "secret",
+			AllowedSubdomains: []string{"*"},
+		},
+	}
+
+	tr := tracker.New()
+	srv := NewServer(reg, users, tr, nil, 100)
+
+	// 1. Present for domain-a.com
+	bodyA, _ := json.Marshal(challenge.PresentRequest{
+		FQDN:  "_acme-challenge.sub.domain-a.com",
+		Value: "val-a",
+	})
+	reqA := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(bodyA))
+	reqA.SetBasicAuth("admin", "secret")
+	rrA := httptest.NewRecorder()
+	srv.ServeHTTP(rrA, reqA)
+
+	if rrA.Code != http.StatusOK {
+		t.Fatalf("expected 200 for domain-a, got %d: %s", rrA.Code, rrA.Body.String())
+	}
+	if provA.createCalls != 1 || provB.createCalls != 0 {
+		t.Errorf("provA calls: %d, provB calls: %d (expected 1 and 0)", provA.createCalls, provB.createCalls)
+	}
+
+	// 2. Present for domain-b.org
+	bodyB, _ := json.Marshal(challenge.PresentRequest{
+		FQDN:  "_acme-challenge.api.domain-b.org",
+		Value: "val-b",
+	})
+	reqB := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(bodyB))
+	reqB.SetBasicAuth("admin", "secret")
+	rrB := httptest.NewRecorder()
+	srv.ServeHTTP(rrB, reqB)
+
+	if rrB.Code != http.StatusOK {
+		t.Fatalf("expected 200 for domain-b, got %d: %s", rrB.Code, rrB.Body.String())
+	}
+	if provA.createCalls != 1 || provB.createCalls != 1 {
+		t.Errorf("provA calls: %d, provB calls: %d (expected 1 and 1)", provA.createCalls, provB.createCalls)
+	}
+
+	// 3. Present for unregistered domain -> 400
+	bodyUnk, _ := json.Marshal(challenge.PresentRequest{
+		FQDN:  "_acme-challenge.unknown.com",
+		Value: "val-unknown",
+	})
+	reqUnk := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(bodyUnk))
+	reqUnk.SetBasicAuth("admin", "secret")
+	rrUnk := httptest.NewRecorder()
+	srv.ServeHTTP(rrUnk, reqUnk)
+
+	if rrUnk.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unregistered domain, got %d", rrUnk.Code)
+	}
+}
+

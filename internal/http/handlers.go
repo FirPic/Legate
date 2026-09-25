@@ -30,26 +30,60 @@ func (s *Server) handlePresent(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	user := GetAuthUser(r)
 
-	res, statusErr := s.parsePresentRequest(w, r)
+	rawReq, statusErr := s.parsePresentPayload(w, r)
 	if statusErr != nil {
 		s.recordMetric("present", "error", start)
 		s.writeJSONError(w, statusErr.code, statusErr.message)
 		return
 	}
 
+	targetFQDN := strings.TrimSpace(rawReq.FQDN)
+	if targetFQDN == "" && strings.TrimSpace(rawReq.Domain) != "" {
+		targetFQDN = challenge.ACMEPrefix + strings.TrimSpace(rawReq.Domain)
+	}
+	if targetFQDN == "" {
+		s.recordMetric("present", "error", start)
+		s.writeJSONError(w, http.StatusBadRequest, "missing fqdn or domain in challenge payload")
+		return
+	}
+
+	// 1. Dynamic multi-provider resolution from Registry
+	dnsProv, baseDomain, err := s.registry.Resolve(targetFQDN)
+	if err != nil {
+		s.recordMetric("present", "error", start)
+		slog.Warn("domain not authorized or not registered", "user", user, "fqdn", targetFQDN, "error", err)
+		s.writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("domain %q is not authorized", targetFQDN))
+		return
+	}
+
+	// 2. Validate and enforce RBAC against the resolved base domain
+	authCtx := GetAuthContext(r)
+	res, err := challenge.ResolveAndValidateForUser(
+		rawReq.FQDN, rawReq.Value, rawReq.Domain, rawReq.Token, rawReq.KeyAuth,
+		baseDomain, authCtx.Username, authCtx.AllowedSubdomains,
+	)
+	if err != nil {
+		s.recordMetric("present", "error", start)
+		code := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "rbac authorization failed") {
+			code = http.StatusForbidden
+		}
+		s.writeJSONError(w, code, err.Error())
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
-	recordID, err := s.dnsProvider.Present(ctx, res.FQDN, res.Value)
+	recordID, err := dnsProv.Present(ctx, res.FQDN, res.Value)
 	if err != nil {
 		s.recordMetric("present", "error", start)
-		// Internal log with full diagnostic details
 		slog.Error("dns provider failed to present challenge",
 			"user", user,
 			"fqdn", res.FQDN,
+			"domain", baseDomain,
 			"error", err,
 		)
-		// Mask internal details from client response (VULN-07)
 		s.writeJSONError(w, http.StatusBadGateway, "upstream DNS provider error")
 		return
 	}
@@ -60,6 +94,7 @@ func (s *Server) handlePresent(w http.ResponseWriter, r *http.Request) {
 	slog.Info("successfully presented ACME DNS challenge",
 		"user", user,
 		"fqdn", res.FQDN,
+		"domain", baseDomain,
 		"record_id", recordID,
 	)
 
@@ -77,10 +112,45 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	user := GetAuthUser(r)
 
-	res, statusErr := s.parseCleanupRequest(w, r)
+	rawReq, statusErr := s.parseCleanupPayload(w, r)
 	if statusErr != nil {
 		s.recordMetric("cleanup", "error", start)
 		s.writeJSONError(w, statusErr.code, statusErr.message)
+		return
+	}
+
+	targetFQDN := strings.TrimSpace(rawReq.FQDN)
+	if targetFQDN == "" && strings.TrimSpace(rawReq.Domain) != "" {
+		targetFQDN = challenge.ACMEPrefix + strings.TrimSpace(rawReq.Domain)
+	}
+	if targetFQDN == "" {
+		s.recordMetric("cleanup", "error", start)
+		s.writeJSONError(w, http.StatusBadRequest, "missing fqdn or domain in challenge payload")
+		return
+	}
+
+	// 1. Dynamic multi-provider resolution from Registry
+	dnsProv, baseDomain, err := s.registry.Resolve(targetFQDN)
+	if err != nil {
+		s.recordMetric("cleanup", "error", start)
+		slog.Warn("domain not authorized or not registered", "user", user, "fqdn", targetFQDN, "error", err)
+		s.writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("domain %q is not authorized", targetFQDN))
+		return
+	}
+
+	// 2. Validate and enforce RBAC against the resolved base domain
+	authCtx := GetAuthContext(r)
+	res, err := challenge.ResolveAndValidateForUser(
+		rawReq.FQDN, rawReq.Value, rawReq.Domain, rawReq.Token, rawReq.KeyAuth,
+		baseDomain, authCtx.Username, authCtx.AllowedSubdomains,
+	)
+	if err != nil {
+		s.recordMetric("cleanup", "error", start)
+		code := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "rbac authorization failed") {
+			code = http.StatusForbidden
+		}
+		s.writeJSONError(w, code, err.Error())
 		return
 	}
 
@@ -89,17 +159,16 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 
 	recordID, _ := s.tracker.Delete(res.FQDN, res.Value)
 
-	err := s.dnsProvider.Cleanup(ctx, res.FQDN, recordID, res.Value)
+	err = dnsProv.Cleanup(ctx, res.FQDN, recordID, res.Value)
 	if err != nil {
 		s.recordMetric("cleanup", "error", start)
-		// Internal log with full diagnostic details
 		slog.Error("dns provider failed to clean up challenge",
 			"user", user,
 			"fqdn", res.FQDN,
+			"domain", baseDomain,
 			"record_id", recordID,
 			"error", err,
 		)
-		// Mask internal details from client response (VULN-07)
 		s.writeJSONError(w, http.StatusBadGateway, "upstream DNS provider error")
 		return
 	}
@@ -109,6 +178,7 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 	slog.Info("successfully cleaned up ACME DNS challenge",
 		"user", user,
 		"fqdn", res.FQDN,
+		"domain", baseDomain,
 		"record_id", recordID,
 	)
 
@@ -127,7 +197,7 @@ type httpError struct {
 	message string
 }
 
-func (s *Server) parsePresentRequest(w http.ResponseWriter, r *http.Request) (*challenge.ValidationResult, *httpError) {
+func (s *Server) parsePresentPayload(w http.ResponseWriter, r *http.Request) (*challenge.PresentRequest, *httpError) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -146,23 +216,10 @@ func (s *Server) parsePresentRequest(w http.ResponseWriter, r *http.Request) (*c
 		return nil, &httpError{code: http.StatusBadRequest, message: fmt.Sprintf("malformed json: %v", err)}
 	}
 
-	authCtx := GetAuthContext(r)
-	res, err := challenge.ResolveAndValidateForUser(
-		req.FQDN, req.Value, req.Domain, req.Token, req.KeyAuth,
-		s.allowedDomain, authCtx.Username, authCtx.AllowedSubdomains,
-	)
-	if err != nil {
-		code := http.StatusBadRequest
-		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "rbac authorization failed") {
-			code = http.StatusForbidden
-		}
-		return nil, &httpError{code: code, message: err.Error()}
-	}
-
-	return res, nil
+	return &req, nil
 }
 
-func (s *Server) parseCleanupRequest(w http.ResponseWriter, r *http.Request) (*challenge.ValidationResult, *httpError) {
+func (s *Server) parseCleanupPayload(w http.ResponseWriter, r *http.Request) (*challenge.CleanupRequest, *httpError) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -181,20 +238,7 @@ func (s *Server) parseCleanupRequest(w http.ResponseWriter, r *http.Request) (*c
 		return nil, &httpError{code: http.StatusBadRequest, message: fmt.Sprintf("malformed json: %v", err)}
 	}
 
-	authCtx := GetAuthContext(r)
-	res, err := challenge.ResolveAndValidateForUser(
-		req.FQDN, req.Value, req.Domain, req.Token, req.KeyAuth,
-		s.allowedDomain, authCtx.Username, authCtx.AllowedSubdomains,
-	)
-	if err != nil {
-		code := http.StatusBadRequest
-		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "rbac authorization failed") {
-			code = http.StatusForbidden
-		}
-		return nil, &httpError{code: code, message: err.Error()}
-	}
-
-	return res, nil
+	return &req, nil
 }
 
 func (s *Server) recordMetric(handler, status string, start time.Time) {

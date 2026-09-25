@@ -14,21 +14,19 @@ import (
 
 // Server handles incoming HTTP requests for ACME DNS-01 challenges.
 type Server struct {
-	allowedDomain string
-	dnsProvider   provider.DNSProvider
-	tracker       *tracker.Tracker
-	auth          *Authenticator
-	metrics       *Metrics
-	rateLimiter   *RateLimiter
-	mux           *http.ServeMux
-	handler       http.Handler
+	registry    *provider.Registry
+	tracker     *tracker.Tracker
+	auth        *Authenticator
+	metrics     *Metrics
+	rateLimiter *RateLimiter
+	mux         *http.ServeMux
+	handler     http.Handler
 }
 
-// NewServer builds and configures a new Server instance for challenge operations.
+// NewServer builds and configures a new Server instance using a multi-domain provider Registry.
 func NewServer(
-	allowedDomain string,
+	reg *provider.Registry,
 	users map[string]config.UserConfig,
-	dnsProvider provider.DNSProvider,
 	tr *tracker.Tracker,
 	m *Metrics,
 	rateLimitPerMinute int,
@@ -36,18 +34,31 @@ func NewServer(
 	rl := NewRateLimiter(rateLimitPerMinute)
 
 	s := &Server{
-		allowedDomain: allowedDomain,
-		dnsProvider:   dnsProvider,
-		tracker:       tr,
-		auth:          NewAuthenticator(users),
-		metrics:       m,
-		rateLimiter:   rl,
-		mux:           http.NewServeMux(),
+		registry:    reg,
+		tracker:     tr,
+		auth:        NewAuthenticator(users),
+		metrics:     m,
+		rateLimiter: rl,
+		mux:         http.NewServeMux(),
 	}
 
 	s.routes()
 	s.handler = s.loggingMiddleware(s.recovererMiddleware(s.mux))
 	return s
+}
+
+// NewSingleProviderServer creates a Server for a single domain and provider (convenience & backward compatibility).
+func NewSingleProviderServer(
+	allowedDomain string,
+	users map[string]config.UserConfig,
+	dnsProvider provider.DNSProvider,
+	tr *tracker.Tracker,
+	m *Metrics,
+	rateLimitPerMinute int,
+) *Server {
+	reg := provider.NewRegistry()
+	_ = reg.Register(allowedDomain, dnsProvider)
+	return NewServer(reg, users, tr, m, rateLimitPerMinute)
 }
 
 func (s *Server) routes() {
@@ -66,21 +77,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // AdminHandler returns an http.Handler serving /healthz and /metrics on the dedicated admin port.
 func (s *Server) AdminHandler() http.Handler {
-	return NewAdminServer(s.allowedDomain, s.tracker, s.metrics)
+	return NewAdminServer(s.registry.RegisteredDomains(), s.tracker, s.metrics)
 }
 
 // NewAdminServer creates an isolated http.Handler serving operational endpoints (/healthz and /metrics).
-func NewAdminServer(allowedDomain string, tr *tracker.Tracker, m *Metrics) http.Handler {
+func NewAdminServer(domains []string, tr *tracker.Tracker, m *Metrics) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"status":          "ok",
 			"tracked_records": tr.Count(),
-			"allowed_domain":  allowedDomain,
-		})
+			"allowed_domains": domains,
+		}
+		if len(domains) == 1 {
+			resp["allowed_domain"] = domains[0]
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	if m != nil {

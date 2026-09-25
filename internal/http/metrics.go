@@ -10,6 +10,7 @@ type Metrics struct {
 	ChallengesTotal         *prometheus.CounterVec
 	ActiveRecords           prometheus.GaugeFunc
 	CloudflareRequestsTotal *prometheus.CounterVec
+	DNSRequestsTotal        *prometheus.CounterVec
 	RequestDuration         *prometheus.HistogramVec
 }
 
@@ -36,6 +37,13 @@ func NewMetrics(reg *prometheus.Registry, activeRecordsFunc func() float64) *Met
 			},
 			[]string{"endpoint", "status"},
 		),
+		DNSRequestsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "acme_dns_provider_requests_total",
+				Help: "Total number of outgoing requests to upstream DNS providers, partitioned by provider, endpoint and status.",
+			},
+			[]string{"provider", "endpoint", "status"},
+		),
 		RequestDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "acme_dns_request_duration_seconds",
@@ -48,6 +56,7 @@ func NewMetrics(reg *prometheus.Registry, activeRecordsFunc func() float64) *Met
 
 	reg.MustRegister(m.ChallengesTotal)
 	reg.MustRegister(m.CloudflareRequestsTotal)
+	reg.MustRegister(m.DNSRequestsTotal)
 	reg.MustRegister(m.RequestDuration)
 
 	if activeRecordsFunc != nil {
@@ -71,7 +80,19 @@ func (m *Metrics) Registry() *prometheus.Registry {
 
 // ObserveCloudflareRequest implements cloudflare.Observer.
 func (m *Metrics) ObserveCloudflareRequest(endpoint, status string) {
-	if m != nil && m.CloudflareRequestsTotal != nil {
-		m.CloudflareRequestsTotal.WithLabelValues(endpoint, status).Inc()
+	if m != nil {
+		if m.CloudflareRequestsTotal != nil {
+			m.CloudflareRequestsTotal.WithLabelValues(endpoint, status).Inc()
+		}
+		if m.DNSRequestsTotal != nil {
+			m.DNSRequestsTotal.WithLabelValues("cloudflare", endpoint, status).Inc()
+		}
+	}
+}
+
+// ObserveDNSRequest implements generic observer for multi-provider metric collection (IONOS, Infomaniak, etc.).
+func (m *Metrics) ObserveDNSRequest(providerName, endpoint, status string) {
+	if m != nil && m.DNSRequestsTotal != nil {
+		m.DNSRequestsTotal.WithLabelValues(providerName, endpoint, status).Inc()
 	}
 }
