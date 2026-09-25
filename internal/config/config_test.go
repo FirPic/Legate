@@ -27,13 +27,18 @@ func clearEnv() {
 	os.Unsetenv("TEST_INFOMANIAK_TOKEN")
 }
 
+const (
+	testArgonHash1 = "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b"
+	testArgonHash2 = "$argon2id$v=19$m=65536,t=3,p=2$ZHZ1bmtsZXZhbGlkc2FsdA$YnlF0zPsh8H3R3m5x/l5g8B4o2gC7f6Q9r8u1v2w3x4"
+)
+
 func TestLoadFromEnv_Success(t *testing.T) {
 	clearEnv()
 	defer clearEnv()
 
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 	os.Setenv("ALLOWED_DOMAIN", "firpic.fr")
-	os.Setenv("USERS", "admin:supersecret:*,traefik:anothersecret:*.dmz.firpic.fr;dmz.firpic.fr")
+	os.Setenv("USERS", "admin:"+testArgonHash1+":*,traefik:"+testArgonHash2+":*.dmz.firpic.fr;dmz.firpic.fr")
 	os.Setenv("PORT", "9090")
 	os.Setenv("BIND_ADDR", "127.0.0.1")
 	os.Setenv("ADMIN_PORT", "9091")
@@ -59,7 +64,7 @@ func TestLoadFromEnv_Success(t *testing.T) {
 	if len(cfg.Users) != 2 {
 		t.Fatalf("expected 2 users, got %d", len(cfg.Users))
 	}
-	if cfg.Users["admin"].Password != "supersecret" {
+	if cfg.Users["admin"].Password != testArgonHash1 {
 		t.Errorf("admin user pass mismatch")
 	}
 	if len(cfg.Users["traefik"].AllowedSubdomains) != 2 {
@@ -82,7 +87,7 @@ func TestLoadFromEnv_StructuredJSONUsers(t *testing.T) {
 
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 	os.Setenv("ALLOWED_DOMAIN", "firpic.fr")
-	os.Setenv("USERS", `{"traefik_dmz":{"password":"secret","allowed_subdomains":["*.dmz.firpic.fr","dmz.firpic.fr"]}}`)
+	os.Setenv("USERS", fmt.Sprintf(`{"traefik_dmz":{"password_hash":%q,"allowed_subdomains":["*.dmz.firpic.fr","dmz.firpic.fr"]}}`, testArgonHash1))
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -93,8 +98,8 @@ func TestLoadFromEnv_StructuredJSONUsers(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected traefik_dmz in users")
 	}
-	if u.Password != "secret" {
-		t.Errorf("expected password 'secret', got %s", u.Password)
+	if u.Password != testArgonHash1 {
+		t.Errorf("expected password %q, got %s", testArgonHash1, u.Password)
 	}
 	if len(u.AllowedSubdomains) != 2 || u.AllowedSubdomains[0] != "*.dmz.firpic.fr" {
 		t.Errorf("unexpected allowed subdomains: %v", u.AllowedSubdomains)
@@ -113,7 +118,7 @@ func TestLoadFromEnv_TokenFileFallback(t *testing.T) {
 
 	os.Setenv("CLOUDFLARE_API_TOKEN_FILE", tokenFile)
 	os.Setenv("ALLOWED_DOMAIN", "firpic.fr")
-	os.Setenv("USER_TRAEFIK_DMZ_PASS", "pass123")
+	os.Setenv("USER_TRAEFIK_DMZ_PASS", testArgonHash1)
 	os.Setenv("USER_TRAEFIK_DMZ_SUBDOMAINS", "*.dmz.firpic.fr,dmz.firpic.fr")
 
 	cfg, err := LoadFromEnv()
@@ -125,8 +130,8 @@ func TestLoadFromEnv_TokenFileFallback(t *testing.T) {
 		t.Errorf("expected token from file 'token-from-file', got %s", cfg.CloudflareAPIToken)
 	}
 	u := cfg.Users["traefik_dmz"]
-	if u.Password != "pass123" {
-		t.Errorf("expected password pass123")
+	if u.Password != testArgonHash1 {
+		t.Errorf("expected password %q, got %q", testArgonHash1, u.Password)
 	}
 	if len(u.AllowedSubdomains) != 2 {
 		t.Errorf("expected 2 subdomains from USER_TRAEFIK_DMZ_SUBDOMAINS, got %v", u.AllowedSubdomains)
@@ -174,10 +179,10 @@ domains:
 
 users:
   traefik:
-    password: "securepassword"
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$ZHZ1bmtsZXZhbGlkc2FsdA$YnlF0zPsh8H3R3m5x/l5g8B4o2gC7f6Q9r8u1v2w3x4"
     allowed_subdomains: ["*.example.com", "*.mondomaine.fr"]
   caddy_argon:
-    password: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b"
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b"
     allowed_subdomains: ["*.entreprise.ch"]
 `
 	tmpDir := t.TempDir()
@@ -392,9 +397,9 @@ domains:
     provider: cf
 users:
   u:
-    password: "p"
+    password_hash: %q
     allowed_subdomains: ["*"]
-`, dummyCert, dummyKey)
+`, dummyCert, dummyKey, testArgonHash1)
 	f6 := filepath.Join(tmpDir, "c6.yaml")
 	_ = os.WriteFile(f6, []byte(yamlValidTLS), 0600)
 	cfgValidTLS, err := LoadFromFile(f6)
@@ -403,5 +408,113 @@ users:
 	}
 	if cfgValidTLS.TLSCertFile != dummyCert || cfgValidTLS.TLSKeyFile != dummyKey {
 		t.Errorf("expected TLS files populated on cfg, got cert=%q, key=%q", cfgValidTLS.TLSCertFile, cfgValidTLS.TLSKeyFile)
+	}
+}
+
+func TestLoadFromFile_FileSecrets_Success(t *testing.T) {
+	clearEnv()
+	defer clearEnv()
+
+	tmpDir := t.TempDir()
+	cfTokenFile := filepath.Join(tmpDir, "cf_token")
+	ionosKeyFile := filepath.Join(tmpDir, "ionos_key")
+	userPassFile := filepath.Join(tmpDir, "traefik_pass")
+
+	_ = os.WriteFile(cfTokenFile, []byte("  secret-cf-token-from-file  \n"), 0600)
+	_ = os.WriteFile(ionosKeyFile, []byte("  secret-ionos-key-from-file \n"), 0600)
+	_ = os.WriteFile(userPassFile, []byte(testArgonHash1+"\n"), 0600)
+
+	yamlContent := fmt.Sprintf(`
+server:
+  port: "8080"
+providers:
+  my-cf:
+    type: cloudflare
+    api_token_file: %q
+  my-ionos:
+    type: ionos
+    api_key_file: %q
+domains:
+  example.com:
+    provider: my-cf
+  example.org:
+    provider: my-ionos
+users:
+  traefik:
+    password_hash_file: %q
+    allowed_subdomains: ["*"]
+`, cfTokenFile, ionosKeyFile, userPassFile)
+
+	f := filepath.Join(tmpDir, "config_files.yaml")
+	_ = os.WriteFile(f, []byte(yamlContent), 0600)
+
+	cfg, err := LoadFromFile(f)
+	if err != nil {
+		t.Fatalf("unexpected error loading config with file secrets: %v", err)
+	}
+
+	if cfg.Providers["my-cf"].APIToken != "secret-cf-token-from-file" {
+		t.Errorf("expected cf token 'secret-cf-token-from-file', got %q", cfg.Providers["my-cf"].APIToken)
+	}
+	if cfg.Providers["my-ionos"].APIKey != "secret-ionos-key-from-file" {
+		t.Errorf("expected ionos key 'secret-ionos-key-from-file', got %q", cfg.Providers["my-ionos"].APIKey)
+	}
+	if cfg.Users["traefik"].Password != testArgonHash1 {
+		t.Errorf("expected user pass %q, got %q", testArgonHash1, cfg.Users["traefik"].Password)
+	}
+}
+
+func TestLoadFromFile_MutualExclusion(t *testing.T) {
+	clearEnv()
+	defer clearEnv()
+
+	tmpDir := t.TempDir()
+	dummyFile := filepath.Join(tmpDir, "dummy")
+	_ = os.WriteFile(dummyFile, []byte("val"), 0600)
+
+	// Both api_token and api_token_file
+	yamlDualToken := fmt.Sprintf(`
+server:
+  port: "8080"
+providers:
+  cf:
+    type: cloudflare
+    api_token: "direct-token"
+    api_token_file: %q
+domains:
+  example.com:
+    provider: cf
+users:
+  u:
+    password_hash: %q
+    allowed_subdomains: ["*"]
+`, dummyFile, testArgonHash1)
+
+	f1 := filepath.Join(tmpDir, "c_dual.yaml")
+	_ = os.WriteFile(f1, []byte(yamlDualToken), 0600)
+	if _, err := LoadFromFile(f1); err == nil {
+		t.Errorf("expected error when both api_token and api_token_file are specified")
+	}
+
+	// Plaintext password rejected
+	yamlPlainPass := `
+server:
+  port: "8080"
+providers:
+  cf:
+    type: cloudflare
+    api_token: "direct-token"
+domains:
+  example.com:
+    provider: cf
+users:
+  u:
+    password_hash: "PlaintextInPasswordHash"
+    allowed_subdomains: ["*"]
+`
+	f2 := filepath.Join(tmpDir, "c_plain.yaml")
+	_ = os.WriteFile(f2, []byte(yamlPlainPass), 0600)
+	if _, err := LoadFromFile(f2); err == nil {
+		t.Errorf("expected error when plaintext password is used")
 	}
 }

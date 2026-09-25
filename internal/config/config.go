@@ -20,7 +20,9 @@ import (
 
 // UserConfig defines credentials and authorized subdomain patterns for an ACME client.
 type UserConfig struct {
-	Password          string   `yaml:"password" json:"password"`
+	Password          string   `yaml:"password,omitempty" json:"password,omitempty"`
+	PasswordHash      string   `yaml:"password_hash,omitempty" json:"password_hash,omitempty"`
+	PasswordHashFile  string   `yaml:"password_hash_file,omitempty" json:"password_hash_file,omitempty"`
 	AllowedSubdomains []string `yaml:"allowed_subdomains" json:"allowed_subdomains"`
 }
 
@@ -38,11 +40,13 @@ type ServerConfig struct {
 
 // ProviderConfig defines parameters for a single DNS provider instance.
 type ProviderConfig struct {
-	Type     string `yaml:"type" json:"type"` // "cloudflare", "ionos", "infomaniak"
-	APIToken string `yaml:"api_token" json:"api_token"`
-	APIKey   string `yaml:"api_key" json:"api_key"`
-	ZoneID   string `yaml:"zone_id" json:"zone_id"`
-	BaseURL  string `yaml:"base_url" json:"base_url"`
+	Type         string `yaml:"type" json:"type"` // "cloudflare", "ionos", "infomaniak"
+	APIToken     string `yaml:"api_token,omitempty" json:"api_token,omitempty"`
+	APITokenFile string `yaml:"api_token_file,omitempty" json:"api_token_file,omitempty"`
+	APIKey       string `yaml:"api_key,omitempty" json:"api_key,omitempty"`
+	APIKeyFile   string `yaml:"api_key_file,omitempty" json:"api_key_file,omitempty"`
+	ZoneID       string `yaml:"zone_id,omitempty" json:"zone_id,omitempty"`
+	BaseURL      string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 }
 
 // DomainConfig binds a domain zone to a configured provider.
@@ -161,18 +165,50 @@ func LoadFromFile(filePath string) (*Config, error) {
 	for pName, pCfg := range cfg.Providers {
 		pType := strings.ToLower(strings.TrimSpace(pCfg.Type))
 		switch pType {
-		case "cloudflare":
-			if pCfg.APIToken == "" {
-				return nil, fmt.Errorf("provider %q (cloudflare): missing api_token", pName)
+		case "cloudflare", "infomaniak":
+			if pCfg.APIKey != "" || pCfg.APIKeyFile != "" {
+				return nil, fmt.Errorf("provider %q (%s): unexpected api_key/api_key_file (uses api_token or api_token_file)", pName, pType)
 			}
+			if pCfg.APIToken != "" && pCfg.APITokenFile != "" {
+				return nil, fmt.Errorf("provider %q (%s): cannot specify both api_token and api_token_file", pName, pType)
+			}
+			if pCfg.APITokenFile != "" {
+				rawToken, err := os.ReadFile(pCfg.APITokenFile)
+				if err != nil {
+					return nil, fmt.Errorf("provider %q (%s): read api_token_file %q: %w", pName, pType, pCfg.APITokenFile, err)
+				}
+				trimmed := strings.TrimSpace(string(rawToken))
+				if trimmed == "" {
+					return nil, fmt.Errorf("provider %q (%s): api_token_file %q is empty", pName, pType, pCfg.APITokenFile)
+				}
+				pCfg.APIToken = trimmed
+			}
+			if pCfg.APIToken == "" {
+				return nil, fmt.Errorf("provider %q (%s): missing api_token or api_token_file", pName, pType)
+			}
+
 		case "ionos":
+			if pCfg.APIToken != "" || pCfg.APITokenFile != "" {
+				return nil, fmt.Errorf("provider %q (ionos): unexpected api_token/api_token_file (uses api_key or api_key_file)", pName)
+			}
+			if pCfg.APIKey != "" && pCfg.APIKeyFile != "" {
+				return nil, fmt.Errorf("provider %q (ionos): cannot specify both api_key and api_key_file", pName)
+			}
+			if pCfg.APIKeyFile != "" {
+				rawKey, err := os.ReadFile(pCfg.APIKeyFile)
+				if err != nil {
+					return nil, fmt.Errorf("provider %q (ionos): read api_key_file %q: %w", pName, pCfg.APIKeyFile, err)
+				}
+				trimmed := strings.TrimSpace(string(rawKey))
+				if trimmed == "" {
+					return nil, fmt.Errorf("provider %q (ionos): api_key_file %q is empty", pName, pCfg.APIKeyFile)
+				}
+				pCfg.APIKey = trimmed
+			}
 			if pCfg.APIKey == "" {
-				return nil, fmt.Errorf("provider %q (ionos): missing api_key", pName)
+				return nil, fmt.Errorf("provider %q (ionos): missing api_key or api_key_file", pName)
 			}
-		case "infomaniak":
-			if pCfg.APIToken == "" {
-				return nil, fmt.Errorf("provider %q (infomaniak): missing api_token", pName)
-			}
+
 		default:
 			return nil, fmt.Errorf("provider %q has unsupported type %q (supported: cloudflare, ionos, infomaniak)", pName, pCfg.Type)
 		}
@@ -186,6 +222,8 @@ func LoadFromFile(filePath string) (*Config, error) {
 				return nil, fmt.Errorf("provider %q: base_url must use https scheme to protect API credentials (got %q)", pName, pCfg.BaseURL)
 			}
 		}
+
+		cfg.Providers[pName] = pCfg
 	}
 
 	// Validate domains
@@ -210,20 +248,58 @@ func LoadFromFile(filePath string) (*Config, error) {
 	if len(cfg.Users) == 0 {
 		// Allow loading users from environment fallback if not in file
 		cfg.Users = make(map[string]UserConfig)
-		loadUsers(cfg.Users)
+		if err := loadUsers(cfg.Users); err != nil {
+			return nil, err
+		}
+	} else {
+		for u, uCfg := range cfg.Users {
+			hasHash := strings.TrimSpace(uCfg.PasswordHash) != ""
+			hasPass := strings.TrimSpace(uCfg.Password) != ""
+			hasFile := strings.TrimSpace(uCfg.PasswordHashFile) != ""
+
+			if hasFile && (hasHash || hasPass) {
+				return nil, fmt.Errorf("user %q: cannot specify both password_hash (or password) and password_hash_file", u)
+			}
+			if hasHash && hasPass && strings.TrimSpace(uCfg.PasswordHash) != strings.TrimSpace(uCfg.Password) {
+				return nil, fmt.Errorf("user %q: cannot specify conflicting password and password_hash", u)
+			}
+
+			var hash string
+			if hasFile {
+				raw, err := os.ReadFile(uCfg.PasswordHashFile)
+				if err != nil {
+					return nil, fmt.Errorf("user %q: read password_hash_file %q: %w", u, uCfg.PasswordHashFile, err)
+				}
+				hash = strings.TrimSpace(string(raw))
+				if hash == "" {
+					return nil, fmt.Errorf("user %q: password_hash_file %q is empty", u, uCfg.PasswordHashFile)
+				}
+			} else if hasHash {
+				hash = strings.TrimSpace(uCfg.PasswordHash)
+			} else if hasPass {
+				hash = strings.TrimSpace(uCfg.Password)
+			}
+
+			if hash == "" {
+				return nil, fmt.Errorf("user %q: missing password_hash or password_hash_file", u)
+			}
+
+			if !strings.HasPrefix(hash, "$argon2id$") {
+				return nil, fmt.Errorf("user %q: plaintext passwords are strictly forbidden. Must be a valid Argon2id hash ($argon2id$...) configured via 'password_hash' or 'password_hash_file'", u)
+			}
+
+			uCfg.PasswordHash = hash
+			uCfg.Password = hash
+
+			if len(uCfg.AllowedSubdomains) == 0 {
+				return nil, fmt.Errorf("user %q: allowed_subdomains cannot be empty (must specify explicit domain patterns, e.g. '*.example.com')", u)
+			}
+			cfg.Users[u] = uCfg
+		}
 	}
 
 	if len(cfg.Users) == 0 {
 		return nil, errors.New("no authorized users configured in config file or environment")
-	}
-
-	for u, uCfg := range cfg.Users {
-		if strings.TrimSpace(uCfg.Password) == "" {
-			return nil, fmt.Errorf("user %q has empty password", u)
-		}
-		if len(uCfg.AllowedSubdomains) == 0 {
-			return nil, fmt.Errorf("user %q: allowed_subdomains cannot be empty (must specify explicit domain patterns, e.g. '*.example.com')", u)
-		}
 	}
 
 	// Validate TLS files if configured
@@ -282,7 +358,11 @@ func LoadFromEnv() (*Config, error) {
 	}
 
 	// 3. Load Cloudflare Token
-	cfg.CloudflareAPIToken = loadCloudflareToken()
+	var cfErr error
+	cfg.CloudflareAPIToken, cfErr = loadCloudflareToken()
+	if cfErr != nil {
+		return nil, cfErr
+	}
 	if cfg.CloudflareAPIToken == "" {
 		return nil, errors.New("CLOUDFLARE_API_TOKEN or CLOUDFLARE_API_TOKEN_FILE is required")
 	}
@@ -297,7 +377,9 @@ func LoadFromEnv() (*Config, error) {
 	}
 
 	// 5. Load Users and RBAC
-	loadUsers(cfg.Users)
+	if err := loadUsers(cfg.Users); err != nil {
+		return nil, err
+	}
 	if len(cfg.Users) == 0 {
 		return nil, errors.New("no authorized users configured: set USERS or USER_<NAME>_PASS env variables")
 	}
@@ -449,24 +531,53 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func loadCloudflareToken() string {
-	if tokenFile := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN_FILE")); tokenFile != "" {
-		content, err := os.ReadFile(tokenFile)
-		if err == nil && len(strings.TrimSpace(string(content))) > 0 {
-			return strings.TrimSpace(string(content))
-		}
+func loadCloudflareToken() (string, error) {
+	hasToken := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN")) != ""
+	tokenFile := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN_FILE"))
+	if hasToken && tokenFile != "" {
+		return "", errors.New("cannot specify both CLOUDFLARE_API_TOKEN and CLOUDFLARE_API_TOKEN_FILE")
 	}
-	return strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
+	if tokenFile != "" {
+		content, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return "", fmt.Errorf("read CLOUDFLARE_API_TOKEN_FILE %q: %w", tokenFile, err)
+		}
+		trimmed := strings.TrimSpace(string(content))
+		if trimmed == "" {
+			return "", fmt.Errorf("CLOUDFLARE_API_TOKEN_FILE %q is empty", tokenFile)
+		}
+		return trimmed, nil
+	}
+	return strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN")), nil
 }
 
-func loadUsers(users map[string]UserConfig) {
+func loadUsers(users map[string]UserConfig) error {
 	if usersEnv := strings.TrimSpace(os.Getenv("USERS")); usersEnv != "" {
 		if strings.HasPrefix(usersEnv, "{") {
 			var structuredMap map[string]UserConfig
 			if err := json.Unmarshal([]byte(usersEnv), &structuredMap); err == nil && len(structuredMap) > 0 {
 				for u, cfg := range structuredMap {
 					u = strings.ToLower(strings.TrimSpace(u))
-					if u != "" && cfg.Password != "" {
+					if u != "" {
+						pass := strings.TrimSpace(cfg.PasswordHash)
+						if pass == "" {
+							pass = strings.TrimSpace(cfg.Password)
+						}
+						if pass == "" && cfg.PasswordHashFile != "" {
+							raw, err := os.ReadFile(cfg.PasswordHashFile)
+							if err != nil {
+								return fmt.Errorf("user %q: read password_hash_file %q: %w", u, cfg.PasswordHashFile, err)
+							}
+							pass = strings.TrimSpace(string(raw))
+						}
+						if pass == "" {
+							return fmt.Errorf("user %q: missing password_hash", u)
+						}
+						if !strings.HasPrefix(pass, "$argon2id$") {
+							return fmt.Errorf("user %q: plaintext password in USERS is strictly forbidden; must be an Argon2id hash ($argon2id$...)", u)
+						}
+						cfg.PasswordHash = pass
+						cfg.Password = pass
 						if len(cfg.AllowedSubdomains) == 0 {
 							cfg.AllowedSubdomains = []string{"*"}
 						}
@@ -478,17 +589,24 @@ func loadUsers(users map[string]UserConfig) {
 				if err := json.Unmarshal([]byte(usersEnv), &flatMap); err == nil {
 					for u, p := range flatMap {
 						u = strings.ToLower(strings.TrimSpace(u))
+						p = strings.TrimSpace(p)
 						if u != "" && p != "" {
+							if !strings.HasPrefix(p, "$argon2id$") {
+								return fmt.Errorf("user %q: plaintext password in USERS is strictly forbidden; must be an Argon2id hash ($argon2id$...)", u)
+							}
 							users[u] = UserConfig{
 								Password:          p,
+								PasswordHash:      p,
 								AllowedSubdomains: []string{"*"},
 							}
 						}
 					}
+				} else {
+					return fmt.Errorf("invalid USERS JSON format: %w", err)
 				}
 			}
 		} else {
-			pairs := strings.Split(usersEnv, ",")
+			pairs := splitUserEntries(usersEnv)
 			for _, pair := range pairs {
 				pair = strings.TrimSpace(pair)
 				if pair == "" {
@@ -497,7 +615,10 @@ func loadUsers(users map[string]UserConfig) {
 				parts := strings.Split(pair, ":")
 				if len(parts) >= 2 {
 					u := strings.ToLower(strings.TrimSpace(parts[0]))
-					p := parts[1]
+					p := strings.TrimSpace(parts[1])
+					if !strings.HasPrefix(p, "$argon2id$") {
+						return fmt.Errorf("user %q: plaintext password in USERS is strictly forbidden; must be an Argon2id hash ($argon2id$...)", u)
+					}
 					subdomains := []string{"*"}
 					if len(parts) >= 3 && strings.TrimSpace(parts[2]) != "" {
 						rawSubs := strings.Split(parts[2], ";")
@@ -512,6 +633,7 @@ func loadUsers(users map[string]UserConfig) {
 					if u != "" && p != "" {
 						users[u] = UserConfig{
 							Password:          p,
+							PasswordHash:      p,
 							AllowedSubdomains: subdomains,
 						}
 					}
@@ -532,7 +654,14 @@ func loadUsers(users map[string]UserConfig) {
 
 		if strings.HasPrefix(key, "USER_") {
 			var username string
-			if strings.HasSuffix(key, "_PASS") {
+			var isFile bool
+			if strings.HasSuffix(key, "_PASS_FILE") {
+				username = strings.TrimSuffix(strings.TrimPrefix(key, "USER_"), "_PASS_FILE")
+				isFile = true
+			} else if strings.HasSuffix(key, "_PASSWORD_FILE") {
+				username = strings.TrimSuffix(strings.TrimPrefix(key, "USER_"), "_PASSWORD_FILE")
+				isFile = true
+			} else if strings.HasSuffix(key, "_PASS") {
 				username = strings.TrimSuffix(strings.TrimPrefix(key, "USER_"), "_PASS")
 			} else if strings.HasSuffix(key, "_PASSWORD") {
 				username = strings.TrimSuffix(strings.TrimPrefix(key, "USER_"), "_PASSWORD")
@@ -540,6 +669,21 @@ func loadUsers(users map[string]UserConfig) {
 
 			if username != "" {
 				u := strings.ToLower(username)
+				var pass string
+				if isFile {
+					raw, err := os.ReadFile(val)
+					if err != nil {
+						return fmt.Errorf("user %q: read %s %q: %w", u, key, val, err)
+					}
+					pass = strings.TrimSpace(string(raw))
+				} else {
+					pass = strings.TrimSpace(val)
+				}
+
+				if !strings.HasPrefix(pass, "$argon2id$") {
+					return fmt.Errorf("user %q: plaintext password in %s is strictly forbidden; must be an Argon2id hash ($argon2id$...)", u, key)
+				}
+
 				subdomains := []string{"*"}
 				if subEnv := os.Getenv("USER_" + username + "_SUBDOMAINS"); strings.TrimSpace(subEnv) != "" {
 					rawSubs := strings.Split(subEnv, ",")
@@ -553,12 +697,15 @@ func loadUsers(users map[string]UserConfig) {
 				}
 
 				users[u] = UserConfig{
-					Password:          val,
+					Password:          pass,
+					PasswordHash:      pass,
 					AllowedSubdomains: subdomains,
 				}
 			}
 		}
 	}
+
+	return nil
 }
 
 var envPlaceholderRegex = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
@@ -570,4 +717,43 @@ func expandEnvStrict(s string) string {
 		varName := match[2 : len(match)-1]
 		return os.Getenv(varName)
 	})
+}
+
+// splitUserEntries splits a USERS string by comma or newline, safely ignoring commas
+// that occur within Argon2id parameter segments (e.g. $m=65536,t=3,p=2$).
+func splitUserEntries(s string) []string {
+	var entries []string
+	var current strings.Builder
+	dollarCount := 0
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '$' {
+			dollarCount++
+			if dollarCount == 6 {
+				dollarCount = 0
+			}
+		}
+
+		// A comma is only a separator if we are not inside the argon2id parameters (between 3rd and 4th $)
+		if (ch == ',' || ch == '\n') && dollarCount != 3 {
+			if dollarCount >= 5 {
+				dollarCount = 0
+			}
+			trimmed := strings.TrimSpace(current.String())
+			if trimmed != "" {
+				entries = append(entries, trimmed)
+			}
+			current.Reset()
+			continue
+		}
+
+		current.WriteByte(ch)
+	}
+
+	trimmed := strings.TrimSpace(current.String())
+	if trimmed != "" {
+		entries = append(entries, trimmed)
+	}
+	return entries
 }
