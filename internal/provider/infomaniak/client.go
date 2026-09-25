@@ -205,7 +205,7 @@ func (c *Client) computeRelativeSource(fqdn string) string {
 
 func (c *Client) doRequest(req *http.Request, endpoint string, target interface{}) error {
 	req.Header.Set("Authorization", "Bearer "+c.apiToken)
-	req.Header.Set("User-Agent", "acme-dns-proxy/1.0")
+	req.Header.Set("User-Agent", "legate/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -231,7 +231,7 @@ func (c *Client) FindTXTRecord(ctx context.Context, zoneID, name, content string
 
 func (c *Client) doRequest(req *http.Request, metricEndpoint string, target any) error {
 	req.Header.Set("Authorization", "Bearer "+c.apiToken)
-	req.Header.Set("User-Agent", "acme-dns-httpreq-proxy/1.0")
+	req.Header.Set("User-Agent", "legate/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
