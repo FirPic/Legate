@@ -31,6 +31,8 @@ type ServerConfig struct {
 	AdminBindAddr      string `yaml:"admin_bind_addr" json:"admin_bind_addr"`
 	RateLimitPerMinute int    `yaml:"rate_limit_per_minute" json:"rate_limit_per_minute"`
 	LogLevel           string `yaml:"log_level" json:"log_level"`
+	TLSCertFile        string `yaml:"tls_cert_file" json:"tls_cert_file"`
+	TLSKeyFile         string `yaml:"tls_key_file" json:"tls_key_file"`
 }
 
 // ProviderConfig defines parameters for a single DNS provider instance.
@@ -64,6 +66,8 @@ type Config struct {
 	CloudflareZoneID   string
 	AllowedDomain      string
 	LogLevel           string
+	TLSCertFile        string
+	TLSKeyFile         string
 }
 
 // Load loads configuration from either a YAML file or environment variables.
@@ -221,6 +225,19 @@ func LoadFromFile(filePath string) (*Config, error) {
 		}
 	}
 
+	// Validate TLS files if configured
+	if cfg.Server.TLSCertFile != "" || cfg.Server.TLSKeyFile != "" {
+		if cfg.Server.TLSCertFile == "" || cfg.Server.TLSKeyFile == "" {
+			return nil, errors.New("both tls_cert_file and tls_key_file must be specified to enable TLS")
+		}
+		if _, err := os.Stat(cfg.Server.TLSCertFile); err != nil {
+			return nil, fmt.Errorf("tls_cert_file %q not accessible: %w", cfg.Server.TLSCertFile, err)
+		}
+		if _, err := os.Stat(cfg.Server.TLSKeyFile); err != nil {
+			return nil, fmt.Errorf("tls_key_file %q not accessible: %w", cfg.Server.TLSKeyFile, err)
+		}
+	}
+
 	// Sync flat fields for backward compatibility
 	cfg.syncFlatFields()
 
@@ -284,6 +301,21 @@ func LoadFromEnv() (*Config, error) {
 		return nil, errors.New("no authorized users configured: set USERS or USER_<NAME>_PASS env variables")
 	}
 
+	// 6. Optional TLS Configuration
+	cfg.TLSCertFile = getEnv("TLS_CERT_FILE", "")
+	cfg.TLSKeyFile = getEnv("TLS_KEY_FILE", "")
+	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+			return nil, errors.New("both TLS_CERT_FILE and TLS_KEY_FILE must be specified to enable TLS")
+		}
+		if _, err := os.Stat(cfg.TLSCertFile); err != nil {
+			return nil, fmt.Errorf("TLS_CERT_FILE %q not accessible: %w", cfg.TLSCertFile, err)
+		}
+		if _, err := os.Stat(cfg.TLSKeyFile); err != nil {
+			return nil, fmt.Errorf("TLS_KEY_FILE %q not accessible: %w", cfg.TLSKeyFile, err)
+		}
+	}
+
 	// Populate Server, Providers and Domains maps for uniform Registry building
 	cfg.Server = ServerConfig{
 		Port:               cfg.Port,
@@ -292,6 +324,8 @@ func LoadFromEnv() (*Config, error) {
 		AdminBindAddr:      cfg.AdminBindAddr,
 		RateLimitPerMinute: cfg.RateLimitPerMinute,
 		LogLevel:           cfg.LogLevel,
+		TLSCertFile:        cfg.TLSCertFile,
+		TLSKeyFile:         cfg.TLSKeyFile,
 	}
 
 	cfg.Providers["cloudflare-env"] = ProviderConfig{
@@ -314,6 +348,8 @@ func (c *Config) syncFlatFields() {
 	c.AdminBindAddr = c.Server.AdminBindAddr
 	c.RateLimitPerMinute = c.Server.RateLimitPerMinute
 	c.LogLevel = c.Server.LogLevel
+	c.TLSCertFile = c.Server.TLSCertFile
+	c.TLSKeyFile = c.Server.TLSKeyFile
 
 	// If there is only one domain, populate AllowedDomain for backward compatibility
 	if len(c.Domains) == 1 {

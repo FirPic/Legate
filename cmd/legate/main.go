@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -92,13 +93,26 @@ func main() {
 		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 
+	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+		httpServer.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+
 	serverErrCh := make(chan error, 2)
 
-	// Start main challenge HTTP server
+	// Start main challenge HTTP/HTTPS server
 	go func() {
-		slog.Info("listening for challenge requests", "address", cfg.ListenAddr())
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErrCh <- fmt.Errorf("main server listener: %w", err)
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			slog.Info("listening for challenge requests with TLS", "address", cfg.ListenAddr())
+			if err := httpServer.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrCh <- fmt.Errorf("main server listener: %w", err)
+			}
+		} else {
+			slog.Info("listening for challenge requests", "address", cfg.ListenAddr())
+			if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrCh <- fmt.Errorf("main server listener: %w", err)
+			}
 		}
 	}()
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -337,5 +338,61 @@ users:
 	_ = os.WriteFile(f4, []byte(yamlInsecureURL), 0600)
 	if _, err := LoadFromFile(f4); err == nil {
 		t.Errorf("expected error for insecure remote http base_url")
+	}
+
+	// Incomplete TLS config rejected
+	yamlPartialTLS := `
+server:
+  port: "8080"
+  tls_cert_file: "/path/to/cert.pem"
+providers:
+  cf:
+    type: cloudflare
+    api_token: "tok"
+domains:
+  example.com:
+    provider: cf
+users:
+  u:
+    password: "p"
+    allowed_subdomains: ["*"]
+`
+	f5 := filepath.Join(tmpDir, "c5.yaml")
+	_ = os.WriteFile(f5, []byte(yamlPartialTLS), 0600)
+	if _, err := LoadFromFile(f5); err == nil {
+		t.Errorf("expected error for partial TLS configuration")
+	}
+
+	// Valid TLS files populated
+	dummyCert := filepath.Join(tmpDir, "cert.pem")
+	dummyKey := filepath.Join(tmpDir, "key.pem")
+	_ = os.WriteFile(dummyCert, []byte("dummy cert"), 0600)
+	_ = os.WriteFile(dummyKey, []byte("dummy key"), 0600)
+
+	yamlValidTLS := fmt.Sprintf(`
+server:
+  port: "8443"
+  tls_cert_file: %q
+  tls_key_file: %q
+providers:
+  cf:
+    type: cloudflare
+    api_token: "tok"
+domains:
+  example.com:
+    provider: cf
+users:
+  u:
+    password: "p"
+    allowed_subdomains: ["*"]
+`, dummyCert, dummyKey)
+	f6 := filepath.Join(tmpDir, "c6.yaml")
+	_ = os.WriteFile(f6, []byte(yamlValidTLS), 0600)
+	cfgValidTLS, err := LoadFromFile(f6)
+	if err != nil {
+		t.Fatalf("unexpected error for valid TLS configuration: %v", err)
+	}
+	if cfgValidTLS.TLSCertFile != dummyCert || cfgValidTLS.TLSKeyFile != dummyKey {
+		t.Errorf("expected TLS files populated on cfg, got cert=%q, key=%q", cfgValidTLS.TLSCertFile, cfgValidTLS.TLSKeyFile)
 	}
 }
