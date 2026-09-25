@@ -176,6 +176,9 @@ users:
   traefik:
     password: "securepassword"
     allowed_subdomains: ["*.example.com", "*.mondomaine.fr"]
+  caddy_argon:
+    password: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b"
+    allowed_subdomains: ["*.entreprise.ch"]
 `
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "config.yaml")
@@ -204,6 +207,12 @@ users:
 	}
 	if cfg.Providers["my-infomaniak"].APIToken != "expanded-infomaniak-token" {
 		t.Errorf("expected Infomaniak token 'expanded-infomaniak-token', got %q", cfg.Providers["my-infomaniak"].APIToken)
+	}
+
+	// Verify literal $ in Argon2id hash was strictly preserved and NOT mangled by env expansion
+	expectedArgon := "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b"
+	if cfg.Users["caddy_argon"].Password != expectedArgon {
+		t.Errorf("Argon2id hash was mangled by env expansion: expected %q, got %q", expectedArgon, cfg.Users["caddy_argon"].Password)
 	}
 
 	// Verify Registry building

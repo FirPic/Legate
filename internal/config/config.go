@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -93,8 +94,8 @@ func LoadFromFile(filePath string) (*Config, error) {
 		return nil, fmt.Errorf("read config file %q: %w", filePath, err)
 	}
 
-	// Expand ${VAR} and $VAR placeholders using environment variables
-	expanded := os.ExpandEnv(string(raw))
+	// Expand strictly ${VAR} placeholders using environment variables, preserving literal $ tokens (such as in Argon2id hashes)
+	expanded := expandEnvStrict(string(raw))
 
 	var fileCfg struct {
 		Server    ServerConfig              `yaml:"server"`
@@ -558,4 +559,15 @@ func loadUsers(users map[string]UserConfig) {
 			}
 		}
 	}
+}
+
+var envPlaceholderRegex = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+// expandEnvStrict replaces only ${VAR} placeholders with environment variables.
+// Unescaped $ characters (such as $argon2id$v=19$...) are strictly preserved.
+func expandEnvStrict(s string) string {
+	return envPlaceholderRegex.ReplaceAllStringFunc(s, func(match string) string {
+		varName := match[2 : len(match)-1]
+		return os.Getenv(varName)
+	})
 }
