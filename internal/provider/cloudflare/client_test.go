@@ -1,12 +1,27 @@
-package dns
+package cloudflare
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
 )
+
+type mockObserver struct {
+	mu       sync.Mutex
+	requests map[string]int
+}
+
+func (m *mockObserver) ObserveCloudflareRequest(endpoint, status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := endpoint + ":" + status
+	m.requests[key]++
+}
 
 func TestCloudflareClient(t *testing.T) {
 	mockZoneID := "mock-zone-12345"
@@ -16,7 +31,7 @@ func TestCloudflareClient(t *testing.T) {
 	mockValue := "challenge-value-test-abc"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check auth bearer
+		// Verify Bearer token
 		if r.Header.Get("Authorization") != "Bearer test-cf-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -89,45 +104,48 @@ func TestCloudflareClient(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewCloudflareClient("test-cf-token", server.URL)
+	client := NewClient("test-cf-token", mockZoneName, server.URL)
+	obs := &mockObserver{requests: make(map[string]int)}
+	client.SetObserver(obs)
+
+	// Verify client satisfies DNSProvider interface
+	var p provider.DNSProvider = client
 	ctx := context.Background()
 
-	// Test GetZoneID
-	zoneID, err := client.GetZoneID(ctx, mockZoneName)
+	// Test Present
+	recID, err := p.Present(ctx, mockFQDN, mockValue)
 	if err != nil {
-		t.Fatalf("unexpected error getting zone ID: %v", err)
-	}
-	if zoneID != mockZoneID {
-		t.Fatalf("expected zone ID %s, got %s", mockZoneID, zoneID)
-	}
-
-	// Verify caching works (server will still return it if requested, but check consistency)
-	zoneID2, err := client.GetZoneID(ctx, mockZoneName)
-	if err != nil || zoneID2 != mockZoneID {
-		t.Fatalf("zone caching failed")
-	}
-
-	// Test CreateTXTRecord
-	recID, err := client.CreateTXTRecord(ctx, mockZoneID, mockFQDN, mockValue)
-	if err != nil {
-		t.Fatalf("unexpected error creating TXT record: %v", err)
+		t.Fatalf("unexpected error presenting challenge: %v", err)
 	}
 	if recID != mockRecordID {
 		t.Fatalf("expected record ID %s, got %s", mockRecordID, recID)
 	}
 
-	// Test FindTXTRecord
-	foundID, err := client.FindTXTRecord(ctx, mockZoneID, mockFQDN, mockValue)
-	if err != nil {
-		t.Fatalf("unexpected error finding record: %v", err)
+	// Verify observer tracked requests (zones + dns_records_create)
+	obs.mu.Lock()
+	if obs.requests["zones:success"] != 1 {
+		t.Errorf("expected 1 zone lookup metric, got %d", obs.requests["zones:success"])
 	}
-	if foundID != mockRecordID {
-		t.Fatalf("expected found record ID %s, got %s", mockRecordID, foundID)
+	if obs.requests["dns_records_create:success"] != 1 {
+		t.Errorf("expected 1 record create metric, got %d", obs.requests["dns_records_create:success"])
+	}
+	obs.mu.Unlock()
+
+	// Test Cleanup with known record ID
+	err = p.Cleanup(ctx, mockFQDN, mockRecordID, mockValue)
+	if err != nil {
+		t.Fatalf("unexpected error cleaning up record: %v", err)
 	}
 
-	// Test DeleteTXTRecord
-	err = client.DeleteTXTRecord(ctx, mockZoneID, mockRecordID)
+	// Test Cleanup with empty record ID (should find via API then delete)
+	err = p.Cleanup(ctx, mockFQDN, "", mockValue)
 	if err != nil {
-		t.Fatalf("unexpected error deleting TXT record: %v", err)
+		t.Fatalf("unexpected error on fallback cleanup: %v", err)
+	}
+
+	// Test Cleanup of nonexistent record (idempotent)
+	err = client.DeleteTXTRecord(ctx, mockZoneID, "nonexistent-rec-id")
+	if err != nil {
+		t.Fatalf("expected 404 to be treated idempotently as success, got error: %v", err)
 	}
 }

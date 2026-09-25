@@ -1,4 +1,4 @@
-package server
+package challenge
 
 import (
 	"strings"
@@ -38,7 +38,7 @@ func TestValidateFQDN(t *testing.T) {
 		},
 		{
 			name:      "Valid multi-level subdomain with trailing dot and uppercase",
-			fqdn:      "_ACME-CHALLENGE.Sub.Internal.FirPic.FR.",
+			fqdn:      " _ACME-CHALLENGE.Sub.Internal.FirPic.FR. ",
 			allowed:   allowedDomain,
 			expectErr: false,
 			expected:  "_acme-challenge.sub.internal.firpic.fr",
@@ -65,7 +65,7 @@ func TestValidateFQDN(t *testing.T) {
 			name:      "Attack: Double prefix injection",
 			fqdn:      "_acme-challenge._acme-challenge.firpic.fr",
 			allowed:   allowedDomain,
-			expectErr: true, // label cannot start with underscore
+			expectErr: true,
 		},
 		{
 			name:      "Attack: Missing challenge prefix entirely",
@@ -80,14 +80,32 @@ func TestValidateFQDN(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			name:      "Attack: Directory traversal attempt",
+			name:      "Attack: Unconfigured allowed domain",
+			fqdn:      "_acme-challenge.firpic.fr",
+			allowed:   "",
+			expectErr: true,
+		},
+		{
+			name:      "Attack: Directory traversal attempt slash",
 			fqdn:      "_acme-challenge.foo/../firpic.fr",
+			allowed:   allowedDomain,
+			expectErr: true,
+		},
+		{
+			name:      "Attack: Backslash directory traversal",
+			fqdn:      "_acme-challenge.foo\\..\\firpic.fr",
 			allowed:   allowedDomain,
 			expectErr: true,
 		},
 		{
 			name:      "Attack: CRLF injection in FQDN",
 			fqdn:      "_acme-challenge.sub\r\n.firpic.fr",
+			allowed:   allowedDomain,
+			expectErr: true,
+		},
+		{
+			name:      "Attack: Null byte injection in FQDN",
+			fqdn:      "_acme-challenge.sub\x00.firpic.fr",
 			allowed:   allowedDomain,
 			expectErr: true,
 		},
@@ -154,6 +172,7 @@ func TestValidateChallengeValue(t *testing.T) {
 		{"Whitespace only", "   ", true},
 		{"Null byte injection", "token\x00extra", true},
 		{"CRLF injection", "token\r\nextra", true},
+		{"DEL control char", "token\x7fextra", true},
 		{"Too long token", strings.Repeat("a", 513), true},
 	}
 
@@ -168,4 +187,65 @@ func TestValidateChallengeValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveAndValidate(t *testing.T) {
+	allowed := "firpic.fr"
+
+	t.Run("Standard mode success", func(t *testing.T) {
+		res, err := ResolveAndValidate(
+			"_acme-challenge.traefik.firpic.fr.",
+			"challenge-value-test-123",
+			"", "", "", allowed,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.FQDN != "_acme-challenge.traefik.firpic.fr" {
+			t.Errorf("expected normalized FQDN, got %s", res.FQDN)
+		}
+		if res.Value != "challenge-value-test-123" {
+			t.Errorf("expected value, got %s", res.Value)
+		}
+	})
+
+	t.Run("Raw mode keyAuth SHA256 derivation", func(t *testing.T) {
+		res, err := ResolveAndValidate(
+			"", "",
+			"traefik.firpic.fr",
+			"token123",
+			"key-auth-xyz",
+			allowed,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error in raw mode: %v", err)
+		}
+		if res.FQDN != "_acme-challenge.traefik.firpic.fr" {
+			t.Errorf("expected derived FQDN, got %s", res.FQDN)
+		}
+		if res.Value == "" {
+			t.Errorf("expected non-empty derived value")
+		}
+	})
+
+	t.Run("Missing FQDN and domain", func(t *testing.T) {
+		_, err := ResolveAndValidate("", "val", "", "", "", allowed)
+		if err == nil {
+			t.Error("expected error for missing fqdn and domain")
+		}
+	})
+
+	t.Run("Missing value and keyAuth", func(t *testing.T) {
+		_, err := ResolveAndValidate("_acme-challenge.firpic.fr", "", "", "", "", allowed)
+		if err == nil {
+			t.Error("expected error for missing value and keyAuth")
+		}
+	})
+
+	t.Run("Invalid FQDN rejected", func(t *testing.T) {
+		_, err := ResolveAndValidate("_acme-challenge.evil.com", "val", "", "", "", allowed)
+		if err == nil {
+			t.Error("expected error for unauthorized domain")
+		}
+	})
 }

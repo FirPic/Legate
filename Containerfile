@@ -1,42 +1,41 @@
-# Build stage
+# syntax=docker/dockerfile:1
+
+# Stage 1: Build static binary
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /src
 
-# Copy go module files
-COPY go.mod ./
+# Cache dependencies
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
+# Copy source tree
 COPY . .
 
-# Build static binary with security hardening flags
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION=1.0.0
 ARG COMMIT=dev
 ARG DATE=unknown
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
     -trimpath \
     -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${DATE}" \
-    -o /bin/acme-dns-httpreq-proxy ./cmd/server
+    -o /bin/acme-dns-proxy ./cmd/acme-dns-proxy
 
-# Final stage: Distroless-style minimal scratch container with CA certificates
-FROM alpine:3.21 AS certs
-RUN apk --no-cache add ca-certificates tzdata
+# Stage 2: Distroless minimal runtime
+FROM gcr.io/distroless/static-debian12:nonroot
 
-FROM scratch
+LABEL org.opencontainers.image.title="acme-dns-httpreq-proxy" \
+      org.opencontainers.image.description="Secure, lightweight ACME DNS-01 HTTP proxy for Lego and Traefik" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/FirPic/acme-dns-httpreq-proxy"
 
-# Import CA certificates for HTTPS calls to Cloudflare
-COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=certs /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /bin/acme-dns-proxy /usr/local/bin/acme-dns-proxy
 
-# Import binary
-COPY --from=builder /bin/acme-dns-httpreq-proxy /acme-dns-httpreq-proxy
+# Run as nonroot user (UID 65532)
+USER nonroot:nonroot
 
-# Use non-root user (nobody:nobody)
-USER 65534:65534
-
-# Standard ACME httpreq proxy port
 EXPOSE 8080
 
-ENTRYPOINT ["/acme-dns-httpreq-proxy"]
+ENTRYPOINT ["/usr/local/bin/acme-dns-proxy"]

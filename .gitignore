@@ -1,6 +1,9 @@
 # Binaries
 /server
+/acme-dns-proxy
 /acme-dns-httpreq-proxy
+/dist/
+/bin/
 *.exe
 *.exe~
 *.dll
@@ -11,6 +14,7 @@
 *.test
 *.out
 coverage.txt
+coverage.out
 
 # IDE & OS
 .idea/

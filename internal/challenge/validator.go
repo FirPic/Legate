@@ -1,4 +1,4 @@
-package server
+package challenge
 
 import (
 	"errors"
@@ -7,21 +7,32 @@ import (
 	"strings"
 )
 
-var (
-	// labelRegex matches standard DNS labels (RFC 1123): lowercase alphanumeric, hyphens allowed in middle.
-	labelRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+const (
+	// ACMEPrefix is the standardized ACME DNS-01 challenge prefix.
+	ACMEPrefix = "_acme-challenge."
+	// MaxFQDNLength is the maximum length of a DNS domain according to RFC 1035 / RFC 1123.
+	MaxFQDNLength = 253
+	// MaxLabelLength is the maximum length of a single DNS label according to RFC 1035.
+	MaxLabelLength = 63
+	// MaxValueLength is the upper bound on ACME challenge TXT token length.
+	MaxValueLength = 512
 )
 
-const (
-	acmePrefix = "_acme-challenge."
+var (
+	// labelRegex matches standard DNS labels (RFC 1123): lowercase alphanumeric, hyphens allowed internally.
+	labelRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 // ValidateFQDN checks whether a given FQDN is valid, safe, and belongs to the allowed domain.
 // It strictly requires the format:
-//   _acme-challenge.<allowedDomain>
+//
+//	_acme-challenge.<allowedDomain>
+//
 // or
-//   _acme-challenge.<subdomain>.<allowedDomain>
-// (with or without a trailing dot).
+//
+//	_acme-challenge.<subdomain>.<allowedDomain>
+//
+// (with or without a trailing dot). Returns normalized lowercase FQDN without trailing dot.
 func ValidateFQDN(fqdn, allowedDomain string) (string, error) {
 	if fqdn == "" {
 		return "", errors.New("fqdn cannot be empty")
@@ -39,16 +50,21 @@ func ValidateFQDN(fqdn, allowedDomain string) (string, error) {
 	}
 
 	// Total length check (RFC 1035 / RFC 1123)
-	if len(normalizedFQDN) > 253 {
-		return "", fmt.Errorf("fqdn exceeds maximum DNS length of 253 characters (got %d)", len(normalizedFQDN))
+	if len(normalizedFQDN) > MaxFQDNLength {
+		return "", fmt.Errorf("fqdn exceeds maximum DNS length of %d characters (got %d)", MaxFQDNLength, len(normalizedFQDN))
+	}
+
+	// Check for path traversal or invalid characters in FQDN
+	if strings.ContainsAny(normalizedFQDN, "/\\:*?\"<>| \t\r\n\x00") {
+		return "", errors.New("fqdn contains forbidden control or path traversal characters")
 	}
 
 	// Must start strictly with `_acme-challenge.`
-	if !strings.HasPrefix(normalizedFQDN, acmePrefix) {
-		return "", fmt.Errorf("fqdn %q must start with prefix %q", fqdn, acmePrefix)
+	if !strings.HasPrefix(normalizedFQDN, ACMEPrefix) {
+		return "", fmt.Errorf("fqdn %q must start with prefix %q", fqdn, ACMEPrefix)
 	}
 
-	domainPart := strings.TrimPrefix(normalizedFQDN, acmePrefix)
+	domainPart := strings.TrimPrefix(normalizedFQDN, ACMEPrefix)
 	if domainPart == "" {
 		return "", errors.New("fqdn missing domain after challenge prefix")
 	}
@@ -67,8 +83,8 @@ func ValidateFQDN(fqdn, allowedDomain string) (string, error) {
 		if label == "" {
 			return "", fmt.Errorf("invalid empty label in domain %q", domainPart)
 		}
-		if len(label) > 63 {
-			return "", fmt.Errorf("label %q exceeds 63 characters", label)
+		if len(label) > MaxLabelLength {
+			return "", fmt.Errorf("label %q exceeds %d characters", label, MaxLabelLength)
 		}
 		if !labelRegex.MatchString(label) {
 			return "", fmt.Errorf("invalid label format %q: must adhere to RFC 1123", label)
@@ -84,10 +100,11 @@ func ValidateChallengeValue(value string) error {
 	if v == "" {
 		return errors.New("challenge value cannot be empty")
 	}
-	if len(v) > 512 {
-		return errors.New("challenge value is too long")
+	if len(v) > MaxValueLength {
+		return fmt.Errorf("challenge value exceeds maximum length of %d characters", MaxValueLength)
 	}
-	// Check for dangerous control characters (CRLF, null byte)
+
+	// Check for dangerous control characters (CRLF, null byte) to prevent header or command injection
 	for _, r := range v {
 		if r < 32 || r == 127 {
 			return errors.New("challenge value contains invalid control characters")

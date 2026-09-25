@@ -1,4 +1,4 @@
-package dns
+package cloudflare
 
 import (
 	"bytes"
@@ -12,36 +12,43 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
 )
 
-// DNSClient defines the interface for interacting with DNS records for ACME challenges.
-type DNSClient interface {
-	GetZoneID(ctx context.Context, zoneName string) (string, error)
-	CreateTXTRecord(ctx context.Context, zoneID, name, content string) (string, error)
-	DeleteTXTRecord(ctx context.Context, zoneID, recordID string) error
-	FindTXTRecord(ctx context.Context, zoneID, name, content string) (string, error)
+// Ensure Client satisfies provider.DNSProvider.
+var _ provider.DNSProvider = (*Client)(nil)
+
+// Observer allows external packages (e.g., Prometheus metrics) to observe API requests.
+type Observer interface {
+	ObserveCloudflareRequest(endpoint, status string)
 }
 
-// CloudflareClient implements DNSClient using Cloudflare REST API v4.
-type CloudflareClient struct {
-	baseURL    string
-	apiToken   string
-	httpClient *http.Client
+// Client implements provider.DNSProvider using Cloudflare REST API v4.
+type Client struct {
+	baseURL       string
+	apiToken      string
+	allowedDomain string
+	httpClient    *http.Client
+	observer      Observer
 
 	cacheMu sync.RWMutex
 	zoneMap map[string]string
 }
 
-// NewCloudflareClient creates an initialized CloudflareClient.
-func NewCloudflareClient(apiToken string, customBaseURL ...string) *CloudflareClient {
+// NewClient creates an initialized Cloudflare DNS provider client.
+func NewClient(apiToken, allowedDomain string, customBaseURL ...string) *Client {
 	baseURL := "https://api.cloudflare.com/client/v4"
 	if len(customBaseURL) > 0 && customBaseURL[0] != "" {
 		baseURL = strings.TrimRight(customBaseURL[0], "/")
 	}
 
-	return &CloudflareClient{
-		baseURL:  baseURL,
-		apiToken: apiToken,
+	normDomain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(allowedDomain), "."))
+
+	return &Client{
+		baseURL:       baseURL,
+		apiToken:      apiToken,
+		allowedDomain: normDomain,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -49,15 +56,56 @@ func NewCloudflareClient(apiToken string, customBaseURL ...string) *CloudflareCl
 	}
 }
 
-// SetZoneIDCache allows pre-seeding the zone ID cache (e.g. from CLOUDFLARE_ZONE_ID config).
-func (c *CloudflareClient) SetZoneIDCache(zoneName, zoneID string) {
-	c.cacheMu.Lock()
-	defer c.cacheMu.Unlock()
-	c.zoneMap[strings.ToLower(strings.TrimSuffix(zoneName, "."))] = zoneID
+// SetObserver sets an observer to record request metrics.
+func (c *Client) SetObserver(obs Observer) {
+	c.observer = obs
 }
 
-// GetZoneID retrieves the Cloudflare Zone ID for a domain name.
-func (c *CloudflareClient) GetZoneID(ctx context.Context, zoneName string) (string, error) {
+// SetZoneID allows pre-seeding the zone ID cache for a domain.
+func (c *Client) SetZoneID(domain, zoneID string) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	norm := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	c.zoneMap[norm] = strings.TrimSpace(zoneID)
+}
+
+// Present implements provider.DNSProvider. It ensures the TXT challenge record is published.
+func (c *Client) Present(ctx context.Context, fqdn, value string) (string, error) {
+	zoneID, err := c.GetZoneID(ctx, c.allowedDomain)
+	if err != nil {
+		return "", fmt.Errorf("resolve zone id: %w", err)
+	}
+
+	return c.CreateTXTRecord(ctx, zoneID, fqdn, value)
+}
+
+// Cleanup implements provider.DNSProvider. It deletes the TXT challenge record.
+func (c *Client) Cleanup(ctx context.Context, fqdn, recordID, value string) error {
+	zoneID, err := c.GetZoneID(ctx, c.allowedDomain)
+	if err != nil {
+		return fmt.Errorf("resolve zone id: %w", err)
+	}
+
+	targetRecordID := strings.TrimSpace(recordID)
+	if targetRecordID == "" {
+		// Fallback: search for existing record directly on Cloudflare
+		foundID, errFind := c.FindTXTRecord(ctx, zoneID, fqdn, value)
+		if errFind != nil {
+			return fmt.Errorf("locate txt record: %w", errFind)
+		}
+		targetRecordID = foundID
+	}
+
+	if targetRecordID == "" {
+		// Record does not exist or is already removed
+		return nil
+	}
+
+	return c.DeleteTXTRecord(ctx, zoneID, targetRecordID)
+}
+
+// GetZoneID retrieves the Cloudflare Zone ID for a domain, using in-memory cache when possible.
+func (c *Client) GetZoneID(ctx context.Context, zoneName string) (string, error) {
 	normZone := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zoneName), "."))
 
 	c.cacheMu.RLock()
@@ -74,7 +122,7 @@ func (c *CloudflareClient) GetZoneID(ctx context.Context, zoneName string) (stri
 	}
 
 	var respData cfZoneResponse
-	if err := c.doRequest(req, &respData); err != nil {
+	if err := c.doRequest(req, "zones", &respData); err != nil {
 		return "", fmt.Errorf("get zone %q: %w", normZone, err)
 	}
 
@@ -90,8 +138,8 @@ func (c *CloudflareClient) GetZoneID(ctx context.Context, zoneName string) (stri
 	return zoneID, nil
 }
 
-// CreateTXTRecord creates an ACME TXT record on Cloudflare.
-func (c *CloudflareClient) CreateTXTRecord(ctx context.Context, zoneID, name, content string) (string, error) {
+// CreateTXTRecord creates an ACME TXT record on Cloudflare with a short TTL (120s).
+func (c *Client) CreateTXTRecord(ctx context.Context, zoneID, name, content string) (string, error) {
 	normName := strings.TrimSuffix(strings.TrimSpace(name), ".")
 	normContent := strings.TrimSpace(content)
 
@@ -99,24 +147,24 @@ func (c *CloudflareClient) CreateTXTRecord(ctx context.Context, zoneID, name, co
 		Type:    "TXT",
 		Name:    normName,
 		Content: normContent,
-		TTL:     120, // 2 minutes TTL for rapid propagation
+		TTL:     120, // 2 minutes for rapid ACME propagation
 		Comment: "managed by acme-dns-httpreq-proxy",
 	}
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("marshal txt record payload: %w", err)
+		return "", fmt.Errorf("marshal txt payload: %w", err)
 	}
 
 	endpoint := fmt.Sprintf("%s/zones/%s/dns_records", c.baseURL, url.PathEscape(zoneID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("create txt record request: %w", err)
+		return "", fmt.Errorf("create txt request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	var respData cfRecordResponse
-	if err := c.doRequest(req, &respData); err != nil {
+	if err := c.doRequest(req, "dns_records_create", &respData); err != nil {
 		return "", fmt.Errorf("cloudflare create txt record: %w", err)
 	}
 
@@ -127,8 +175,8 @@ func (c *CloudflareClient) CreateTXTRecord(ctx context.Context, zoneID, name, co
 	return respData.Result.ID, nil
 }
 
-// DeleteTXTRecord removes a DNS record by ID.
-func (c *CloudflareClient) DeleteTXTRecord(ctx context.Context, zoneID, recordID string) error {
+// DeleteTXTRecord removes a DNS record by ID. 404 Not Found is treated as successful (idempotent).
+func (c *Client) DeleteTXTRecord(ctx context.Context, zoneID, recordID string) error {
 	endpoint := fmt.Sprintf("%s/zones/%s/dns_records/%s", c.baseURL, url.PathEscape(zoneID), url.PathEscape(recordID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
 	if err != nil {
@@ -136,11 +184,11 @@ func (c *CloudflareClient) DeleteTXTRecord(ctx context.Context, zoneID, recordID
 	}
 
 	var respData cfRecordResponse
-	err = c.doRequest(req, &respData)
+	err = c.doRequest(req, "dns_records_delete", &respData)
 	if err != nil {
-		// If 404, record is already gone, consider cleanup successful (idempotent)
 		var httpErr *httpStatusError
 		if errors.As(err, &httpErr) && httpErr.statusCode == http.StatusNotFound {
+			// Record already deleted
 			return nil
 		}
 		return fmt.Errorf("cloudflare delete txt record: %w", err)
@@ -153,8 +201,8 @@ func (c *CloudflareClient) DeleteTXTRecord(ctx context.Context, zoneID, recordID
 	return nil
 }
 
-// FindTXTRecord searches for an existing TXT record by name and content.
-func (c *CloudflareClient) FindTXTRecord(ctx context.Context, zoneID, name, content string) (string, error) {
+// FindTXTRecord searches Cloudflare for an existing TXT record matching name and content.
+func (c *Client) FindTXTRecord(ctx context.Context, zoneID, name, content string) (string, error) {
 	normName := strings.TrimSuffix(strings.TrimSpace(name), ".")
 	normContent := strings.TrimSpace(content)
 
@@ -170,7 +218,7 @@ func (c *CloudflareClient) FindTXTRecord(ctx context.Context, zoneID, name, cont
 	}
 
 	var respData cfRecordListResponse
-	if err := c.doRequest(req, &respData); err != nil {
+	if err := c.doRequest(req, "dns_records_list", &respData); err != nil {
 		return "", fmt.Errorf("cloudflare find txt record: %w", err)
 	}
 
@@ -181,15 +229,26 @@ func (c *CloudflareClient) FindTXTRecord(ctx context.Context, zoneID, name, cont
 	return respData.Result[0].ID, nil
 }
 
-func (c *CloudflareClient) doRequest(req *http.Request, target any) error {
+func (c *Client) doRequest(req *http.Request, metricEndpoint string, target any) error {
 	req.Header.Set("Authorization", "Bearer "+c.apiToken)
 	req.Header.Set("User-Agent", "acme-dns-httpreq-proxy/1.0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if c.observer != nil {
+			c.observer.ObserveCloudflareRequest(metricEndpoint, "error")
+		}
 		return fmt.Errorf("http execute: %w", err)
 	}
 	defer resp.Body.Close()
+
+	statusStr := "success"
+	if resp.StatusCode >= 400 {
+		statusStr = fmt.Sprintf("%d", resp.StatusCode)
+	}
+	if c.observer != nil {
+		c.observer.ObserveCloudflareRequest(metricEndpoint, statusStr)
+	}
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if err != nil {

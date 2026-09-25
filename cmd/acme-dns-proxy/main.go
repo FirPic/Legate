@@ -14,16 +14,18 @@ import (
 	"time"
 
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/dns"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/lock"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/server"
+	httpinternal "github.com/FirPic/acme-dns-httpreq-proxy/internal/http"
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/cloudflare"
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/tracker"
 )
 
 var (
 	// Version is populated during build via -ldflags
 	Version = "1.0.0"
-	Commit  = "dev"
-	Date    = "unknown"
+	// Commit is populated during build via -ldflags
+	Commit = "dev"
+	// Date is populated during build via -ldflags
+	Date = "unknown"
 )
 
 func main() {
@@ -31,11 +33,11 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("acme-dns-httpreq-proxy version %s (commit: %s, built at: %s)\n", Version, Commit, Date)
+		fmt.Printf("acme-dns-proxy version %s (commit: %s, built at: %s)\n", Version, Commit, Date)
 		os.Exit(0)
 	}
 
-	// 1. Load configuration
+	// 1. Load configuration (fail-fast)
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
@@ -45,7 +47,7 @@ func main() {
 	// 2. Setup structured logging
 	initLogger(cfg.LogLevel)
 
-	slog.Info("starting acme-dns-httpreq-proxy",
+	slog.Info("starting acme-dns-proxy",
 		"version", Version,
 		"commit", Commit,
 		"bind_addr", cfg.BindAddr,
@@ -55,16 +57,23 @@ func main() {
 		"log_level", cfg.LogLevel,
 	)
 
-	// 3. Initialize Cloudflare DNS client
-	dnsClient := dns.NewCloudflareClient(cfg.CloudflareAPIToken)
+	// 3. Initialize record tracker and metrics
+	tr := tracker.New()
+	metrics := httpinternal.NewMetrics(nil, func() float64 {
+		return float64(tr.Count())
+	})
+
+	// 4. Initialize Cloudflare DNS provider client
+	dnsClient := cloudflare.NewClient(cfg.CloudflareAPIToken, cfg.AllowedDomain)
+	dnsClient.SetObserver(metrics)
+
 	if cfg.CloudflareZoneID != "" {
-		dnsClient.SetZoneIDCache(cfg.AllowedDomain, cfg.CloudflareZoneID)
-		slog.Info("pre-configured cloudflare zone id set", "zone_id", cfg.CloudflareZoneID)
+		dnsClient.SetZoneID(cfg.AllowedDomain, cfg.CloudflareZoneID)
+		slog.Info("pre-configured cloudflare zone id registered", "zone_id", cfg.CloudflareZoneID)
 	}
 
-	// 4. Initialize record tracker and HTTP server
-	tracker := lock.NewRecordTracker()
-	appServer := server.NewServer(cfg, dnsClient, tracker)
+	// 5. Build HTTP server
+	appServer := httpinternal.NewServer(cfg.AllowedDomain, cfg.Users, dnsClient, tr, metrics)
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr(),
@@ -73,10 +82,10 @@ func main() {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      35 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1MB
+		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 
-	// 5. Start HTTP server in a goroutine
+	// 6. Start HTTP listener in background goroutine
 	serverErrCh := make(chan error, 1)
 	go func() {
 		slog.Info("listening for incoming requests", "address", cfg.ListenAddr())
@@ -85,7 +94,7 @@ func main() {
 		}
 	}()
 
-	// 6. Graceful shutdown on SIGINT / SIGTERM
+	// 7. Graceful shutdown on SIGINT / SIGTERM
 	shutdownSigCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownSigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -97,7 +106,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create shutdown context with 15 second grace period
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 
@@ -126,7 +134,7 @@ func initLogger(levelStr string) {
 		Level: level,
 	}
 
-	// JSON output for production cloud-native observability
+	// Cloud-native JSON logging output
 	handler := slog.NewJSONHandler(os.Stdout, opts)
 	logger := slog.New(handler)
 	slog.SetDefault(logger)

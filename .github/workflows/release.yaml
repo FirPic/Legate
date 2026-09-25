@@ -10,42 +10,32 @@ permissions:
   packages: write
 
 jobs:
-  binaries:
-    name: Build Binaries
+  goreleaser:
+    name: Release Binaries (GoReleaser)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, darwin]
-        goarch: [amd64, arm64]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          check-latest: true
 
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          OUTPUT_NAME="acme-dns-httpreq-proxy-${TAG_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
-          go build -trimpath \
-            -ldflags="-s -w -X main.Version=${TAG_NAME} -X main.Commit=${GITHUB_SHA} -X main.Date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            -o "dist/${OUTPUT_NAME}" ./cmd/server
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
-    name: Build & Push Container Image
+    name: Build & Push Container Image (GHCR)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -86,3 +76,4 @@ jobs:
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
+            DATE=${{ steps.meta.outputs.created }}

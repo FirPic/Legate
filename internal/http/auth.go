@@ -1,4 +1,4 @@
-package server
+package http
 
 import (
 	"context"
@@ -16,12 +16,12 @@ const (
 	dummySecret            = "invalid-dummy-password-for-constant-time-comparison-protection"
 )
 
-// Authenticator handles Basic Authentication using constant-time comparisons.
+// Authenticator handles HTTP Basic Authentication using constant-time comparisons.
 type Authenticator struct {
 	users map[string]string
 }
 
-// NewAuthenticator creates an Authenticator with a set of valid username:password pairs.
+// NewAuthenticator creates an Authenticator with a normalized map of username to password.
 func NewAuthenticator(users map[string]string) *Authenticator {
 	copyUsers := make(map[string]string, len(users))
 	for u, p := range users {
@@ -31,6 +31,7 @@ func NewAuthenticator(users map[string]string) *Authenticator {
 }
 
 // Verify checks the provided username and password using constant-time comparison.
+// It executes a dummy comparison if the user is missing to mitigate timing attack user enumeration.
 func (a *Authenticator) Verify(username, password string) bool {
 	u := strings.ToLower(strings.TrimSpace(username))
 	expectedPassword, userFound := a.users[u]
@@ -39,7 +40,6 @@ func (a *Authenticator) Verify(username, password string) bool {
 	if userFound {
 		passMatch = subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword))
 	} else {
-		// Prevent user enumeration via timing by comparing against a dummy password
 		_ = subtle.ConstantTimeCompare([]byte(password), []byte(dummySecret))
 		passMatch = 0
 	}
@@ -62,13 +62,13 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": "unauthorized: valid basic authentication credentials required",
+				"status": "error",
+				"error":  "unauthorized: valid basic authentication credentials required",
 			})
 			return
 		}
 
-		// Inject authenticated username into request context
-		ctx := context.WithValue(r.Context(), authUserKey, strings.ToLower(username))
+		ctx := context.WithValue(r.Context(), authUserKey, strings.ToLower(strings.TrimSpace(username)))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -80,5 +80,5 @@ func GetAuthUser(r *http.Request) string {
 			return user
 		}
 	}
-	return ""
+	return "anonymous"
 }
