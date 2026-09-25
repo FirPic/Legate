@@ -15,7 +15,6 @@ import (
 
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
 	httpinternal "github.com/FirPic/acme-dns-httpreq-proxy/internal/http"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/cloudflare"
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/tracker"
 )
 
@@ -30,6 +29,7 @@ var (
 
 func main() {
 	showVersion := flag.Bool("version", false, "Print version information and exit")
+	configPath := flag.String("config", "", "Path to YAML configuration file (optional, defaults to environment variables)")
 	flag.Parse()
 
 	if *showVersion {
@@ -37,8 +37,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 1. Load configuration (fail-fast)
-	cfg, err := config.LoadFromEnv()
+	// 1. Load configuration (fail-fast: YAML with env expansion or pure env vars)
+	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
 		os.Exit(1)
@@ -54,7 +54,8 @@ func main() {
 		"port", cfg.Port,
 		"admin_port", cfg.AdminPort,
 		"rate_limit_per_min", cfg.RateLimitPerMinute,
-		"allowed_domain", cfg.AllowedDomain,
+		"providers_count", len(cfg.Providers),
+		"domains_count", len(cfg.Domains),
 		"users_count", len(cfg.Users),
 		"log_level", cfg.LogLevel,
 	)
@@ -70,17 +71,16 @@ func main() {
 		return float64(tr.Count())
 	})
 
-	// 5. Initialize Cloudflare DNS provider client
-	dnsClient := cloudflare.NewClient(cfg.CloudflareAPIToken, cfg.AllowedDomain)
-	dnsClient.SetObserver(metrics)
-
-	if cfg.CloudflareZoneID != "" {
-		dnsClient.SetZoneID(cfg.AllowedDomain, cfg.CloudflareZoneID)
-		slog.Info("pre-configured cloudflare zone id registered", "zone_id", cfg.CloudflareZoneID)
+	// 5. Initialize Multi-domain DNS Provider Registry
+	dnsRegistry, err := cfg.BuildRegistry(metrics)
+	if err != nil {
+		slog.Error("failed to initialize dns provider registry", "error", err)
+		os.Exit(1)
 	}
+	slog.Info("registered dns provider domains", "domains", dnsRegistry.RegisteredDomains())
 
 	// 6. Build HTTP challenge server
-	appServer := httpinternal.NewServer(cfg.AllowedDomain, cfg.Users, dnsClient, tr, metrics, cfg.RateLimitPerMinute)
+	appServer := httpinternal.NewServer(dnsRegistry, cfg.Users, tr, metrics, cfg.RateLimitPerMinute)
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr(),
@@ -123,54 +123,57 @@ func main() {
 		}()
 	}
 
-	// 8. Graceful shutdown on SIGINT / SIGTERM
+	// 8. Wait for OS signal or unexpected server listener errors
 	shutdownSigCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownSigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case sig := <-shutdownSigCh:
-		slog.Info("received termination signal, initiating graceful shutdown", "signal", sig.String())
-	case err := <-serverErrCh:
-		slog.Error("server listener encountered fatal error", "error", err)
-		os.Exit(1)
+		slog.Info("shutdown signal received", "signal", sig.String())
+	case srvErr := <-serverErrCh:
+		slog.Error("critical server listener failure", "error", srvErr)
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer shutdownCancel()
+	// 9. Graceful shutdown sequence
+	slog.Info("initiating graceful shutdown...")
 
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("graceful shutdown failed for main server", "error", err)
-		_ = httpServer.Close()
-	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 
 	if adminServer != nil {
 		if err := adminServer.Shutdown(shutdownCtx); err != nil {
-			slog.Error("graceful shutdown failed for admin server", "error", err)
-			_ = adminServer.Close()
+			slog.Error("error during admin server shutdown", "error", err)
+		} else {
+			slog.Info("admin server stopped")
 		}
 	}
 
-	slog.Info("server shutdown completed cleanly")
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("error during main server shutdown", "error", err)
+	} else {
+		slog.Info("main server stopped")
+	}
+
+	slog.Info("server shutdown complete")
 }
 
-func initLogger(levelStr string) {
-	var level slog.Level
-	switch strings.ToLower(levelStr) {
+func initLogger(level string) {
+	var lvl slog.Level
+	switch strings.ToLower(level) {
 	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
+		lvl = slog.LevelDebug
+	case "warn":
+		lvl = slog.LevelWarn
 	case "error":
-		level = slog.LevelError
+		lvl = slog.LevelError
 	default:
-		level = slog.LevelInfo
+		lvl = slog.LevelInfo
 	}
 
 	opts := &slog.HandlerOptions{
-		Level: level,
+		Level: lvl,
 	}
 
-	handler := slog.NewJSONHandler(os.Stdout, opts)
-	logger := slog.New(handler)
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, opts))
 	slog.SetDefault(logger)
 }

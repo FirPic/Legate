@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org)
 
-A lightweight, zero-dependency, cloud-native HTTP proxy written in Go that securely relays ACME DNS-01 challenges from Lego's [`httpreq`](https://go-acme.github.io/lego/dns/httpreq/) provider (as used by **Traefik**, **Caddy**, and **Lego**) to the Cloudflare API v4.
+A lightweight, zero-dependency, cloud-native HTTP proxy written in Go that securely relays ACME DNS-01 challenges from Lego's [`httpreq`](https://go-acme.github.io/lego/dns/httpreq/) provider (as used by **Traefik**, **Caddy**, and **Lego**) to upstream DNS providers (**Cloudflare**, **IONOS**, **Infomaniak**).
 
 ---
 
@@ -54,8 +54,64 @@ Verify service liveness:
 
 ```bash
 curl -s http://localhost:8080/healthz
-# {"allowed_domain":"example.com","status":"ok","tracked_records":0}
+# {"allowed_domain":"example.com","allowed_domains":["example.com"],"status":"ok","tracked_records":0}
 ```
+
+---
+
+## Multi-Provider Configuration (YAML)
+
+For multi-domain setups across multiple DNS providers (**Cloudflare**, **IONOS**, **Infomaniak**), configure using a YAML file with native environment variable expansion (`${VAR}`):
+
+```yaml
+server:
+  port: "8080"
+  bind_addr: "0.0.0.0"
+  admin_port: "9090"
+  rate_limit_per_minute: 60
+  log_level: "info"
+
+providers:
+  cf-main:
+    type: cloudflare
+    api_token: "${CLOUDFLARE_API_TOKEN}"
+    zone_id: "${CLOUDFLARE_ZONE_ID}" # optional pre-cached zone
+
+  ionos-prod:
+    type: ionos
+    api_key: "${IONOS_API_KEY}"      # format: prefix.secret
+
+  infomaniak-corp:
+    type: infomaniak
+    api_token: "${INFOMANIAK_API_TOKEN}"
+
+domains:
+  example.com:
+    provider: cf-main
+  mon-domaine.fr:
+    provider: ionos-prod
+  entreprise.ch:
+    provider: infomaniak-corp
+
+users:
+  traefik_edge:
+    password: "${TRAEFIK_PASSWORD}"
+    allowed_subdomains: ["*.example.com", "*.mon-domaine.fr"]
+  caddy_internal:
+    password: "${CADDY_PASSWORD}"
+    allowed_subdomains: ["*.entreprise.ch"]
+```
+
+Run with configuration file:
+
+```bash
+./acme-dns-proxy --config /path/to/config.yaml
+# Or via environment variable:
+CONFIG_FILE=/path/to/config.yaml ./acme-dns-proxy
+```
+
+> [!NOTE]
+> Backward compatibility: If no configuration file is specified, `acme-dns-httpreq-proxy` automatically falls back to single-provider environment variable configuration (`CLOUDFLARE_API_TOKEN`, `ALLOWED_DOMAIN`, etc.).
 
 ---
 
