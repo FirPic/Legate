@@ -90,10 +90,7 @@ func NewAdminServer(domains []string, tr *tracker.Tracker, m *Metrics) http.Hand
 		resp := map[string]any{
 			"status":          "ok",
 			"tracked_records": tr.Count(),
-			"allowed_domains": domains,
-		}
-		if len(domains) == 1 {
-			resp["allowed_domain"] = domains[0]
+			"domains_count":   len(domains),
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	})

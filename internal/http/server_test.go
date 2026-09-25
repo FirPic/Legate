@@ -103,6 +103,12 @@ func TestHealthzEndpointOnAdmin(t *testing.T) {
 	if resp["status"] != "ok" {
 		t.Errorf("expected status ok, got %v", resp["status"])
 	}
+	if resp["allowed_domains"] != nil || resp["allowed_domain"] != nil {
+		t.Errorf("information disclosure: healthz must not expose domain lists: %v", resp)
+	}
+	if resp["domains_count"] != float64(1) {
+		t.Errorf("expected domains_count 1, got %v", resp["domains_count"])
+	}
 
 	// 2. Check main server rejects /healthz (VULN-02 separation)
 	mainReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)

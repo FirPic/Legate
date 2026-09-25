@@ -56,7 +56,7 @@ Verify service liveness:
 
 ```bash
 curl -s http://localhost:9090/healthz
-# {"allowed_domains":["example.com"],"status":"ok","tracked_records":0}
+# {"domains_count":1,"status":"ok","tracked_records":0}
 ```
 
 ---
