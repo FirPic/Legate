@@ -1,4 +1,4 @@
-# Contributing to acme-dns-httpreq-proxy
+# Contributing to Legate
 
 Thank you for your interest in contributing! We appreciate bug reports, feature suggestions, documentation enhancements, and pull requests.
 
@@ -15,15 +15,14 @@ We are committed to providing a friendly, safe, and welcoming environment for al
 ### Prerequisites
 
 - **Go**: 1.24 or later.
-- **Nix** (optional, recommended): Run `nix shell nixpkgs#go` to enter a reproducible environment.
-- **Docker** or **Podman**: for building container images.
+- **Podman**: for building container images.
 - **golangci-lint**: for static analysis.
 
 ### Cloning and Building
 
 ```bash
-git clone https://github.com/FirPic/acme-dns-httpreq-proxy.git
-cd acme-dns-httpreq-proxy
+git clone https://github.com/FirPic/legate.git
+cd legate
 
 # Build binary
 make build
@@ -44,7 +43,7 @@ make lint
    - `internal/provider`: DNS provider interfaces and implementations.
    - `internal/tracker`: Concurrency and lifecycle state tracking.
    - `internal/http`: HTTP handlers, middlewares, metrics.
-   - `internal/config`: Fail-fast environment configuration.
+   - `internal/config`: Fail-fast environment and YAML configuration.
 2. **Minimal External Dependencies**: We avoid bloated SDKs and framework overhead. Favor standard library (`net/http`, `log/slog`, `crypto/subtle`, `sync`) whenever possible.
 3. **Zero Data Races**: All code handling state must be thread-safe. `go test -race ./...` must pass with zero warnings.
 4. **Security by Design**:

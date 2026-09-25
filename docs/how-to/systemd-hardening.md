@@ -1,6 +1,6 @@
 # How-To: Hardened Deployment (systemd & Podman Quadlet)
 
-This guide provides battle-tested production configurations for running `acme-dns-httpreq-proxy` with strict sandboxing and security hardening, conforming to standards such as **ANSSI BP-028 v2.0 MIE**.
+This guide provides battle-tested production configurations for running **Legate** with strict sandboxing and security hardening, conforming to standards such as **ANSSI BP-028 v2.0 MIE**.
 
 ---
 
@@ -8,50 +8,65 @@ This guide provides battle-tested production configurations for running `acme-dn
 
 This configuration runs the native compiled Go binary with extreme isolation: ephemeral unprivileged user, strict read-only root filesystem, restricted Linux namespaces, and empty capability bounding set.
 
-### 1. Place Binary and Environment File
+### 1. Place Binary and Configuration File
 
-Install the statically compiled binary to `/usr/local/bin/acme-dns-proxy`:
-
-```bash
-sudo install -m 755 -o root -g root ./acme-dns-proxy /usr/local/bin/acme-dns-proxy
-```
-
-Create an environment file `/etc/acme-dns-proxy/proxy.env` restricted to root:
+Install the statically compiled binary to `/usr/local/bin/legate`:
 
 ```bash
-sudo mkdir -p /etc/acme-dns-proxy
-sudo chmod 700 /etc/acme-dns-proxy
+sudo install -m 755 -o root -g root ./legate /usr/local/bin/legate
 ```
 
-```ini
-# /etc/acme-dns-proxy/proxy.env (permissions 600)
-PORT=8080
-BIND_ADDR=10.53.20.15
-ALLOWED_DOMAIN=example.com
-CLOUDFLARE_API_TOKEN=your-cloudflare-token-here
-USERS=traefik_dmz:StrongRandomPassword123,traefik_infra:AnotherStrongPassword456
-LOG_LEVEL=info
+Create a configuration directory `/etc/legate` restricted to root:
+
+```bash
+sudo mkdir -p /etc/legate
+sudo chmod 700 /etc/legate
+```
+
+Place your production YAML configuration at `/etc/legate/config.yaml`:
+
+```yaml
+server:
+  port: "8080"
+  bind_addr: "10.53.20.15"
+  admin_port: "9090"
+  admin_bind_addr: "127.0.0.1"
+  rate_limit_per_minute: 60
+  log_level: "info"
+
+providers:
+  cf-main:
+    type: cloudflare
+    api_token: "your-cloudflare-api-token"
+
+domains:
+  example.com:
+    provider: cf-main
+
+users:
+  traefik_dmz:
+    password: "StrongRandomPassword123"
+    allowed_subdomains: ["*.dmz.example.com", "dmz.example.com"]
 ```
 
 ```bash
-sudo chmod 600 /etc/acme-dns-proxy/proxy.env
+sudo chmod 600 /etc/legate/config.yaml
 ```
 
 ### 2. Create the systemd Unit File
 
-Create `/etc/systemd/system/acme-dns-proxy.service`:
+Create `/etc/systemd/system/legate.service`:
 
 ```ini
 [Unit]
-Description=ACME DNS HTTP Request Proxy
-Documentation=https://github.com/FirPic/acme-dns-httpreq-proxy
+Description=Legate ACME DNS-01 Challenge Gateway
+Documentation=https://github.com/FirPic/legate
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/acme-dns-proxy
-EnvironmentFile=/etc/acme-dns-proxy/proxy.env
+ExecStart=/usr/local/bin/legate --config /etc/legate/config.yaml
 Restart=always
 RestartSec=5s
 
@@ -61,8 +76,8 @@ RestartSec=5s
 
 # Dynamic, ephemeral unprivileged execution
 DynamicUser=yes
-User=acme-proxy
-Group=acme-proxy
+User=legate
+Group=legate
 
 # Filesystem protections
 ProtectSystem=strict
@@ -108,17 +123,17 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now acme-dns-proxy.service
-sudo systemctl status acme-dns-proxy.service
+sudo systemctl enable --now legate.service
+sudo systemctl status legate.service
 ```
 
 Run security audit analysis:
 
 ```bash
-systemd-analyze security acme-dns-proxy.service
+systemd-analyze security legate.service
 ```
 
-*Expected score:* `1.0 / OK` (Extremely hardened, zero critical warnings).
+*Expected score:* `<= 1.0 / OK` (Extremely hardened, zero critical warnings).
 
 ---
 
@@ -126,18 +141,20 @@ systemd-analyze security acme-dns-proxy.service
 
 If you prefer running containerized workloads, Podman Quadlet allows rootless execution without a daemon:
 
-Create `~/.config/containers/systemd/acme-dns-proxy.container`:
+Create `~/.config/containers/systemd/legate.container`:
 
 ```ini
 [Unit]
-Description=ACME DNS HTTP Request Proxy Container
+Description=Legate ACME DNS Gateway Container
 After=network-online.target
 
 [Container]
-Image=ghcr.io/firpic/acme-dns-httpreq-proxy:latest
-ContainerName=acme-dns-proxy
-EnvironmentFile=%h/.config/acme-dns-proxy/proxy.env
+Image=ghcr.io/firpic/legate:latest
+ContainerName=legate
+Volume=%h/.config/legate/config.yaml:/etc/legate/config.yaml:ro,z
+Environment=CONFIG_FILE=/etc/legate/config.yaml
 PublishPort=10.53.20.15:8080:8080
+PublishPort=127.0.0.1:9090:9090
 
 # Security constraints
 User=65534:65534
@@ -145,8 +162,8 @@ ReadOnly=true
 NoNewPrivileges=true
 DropCapability=ALL
 
-# Health check
-HealthCmd=curl -f http://127.0.0.1:8080/healthz || exit 1
+# Health check (queried on internal admin port 9090)
+HealthCmd=curl -f http://127.0.0.1:9090/healthz || exit 1
 HealthInterval=30s
 HealthRetries=3
 
@@ -162,5 +179,5 @@ Reload systemd user daemon and start:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now acme-dns-proxy.service
+systemctl --user enable --now legate.service
 ```

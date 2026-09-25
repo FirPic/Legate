@@ -28,14 +28,14 @@ Configure the token parameters as follows:
 
 | Field | Configuration | Notes |
 | :--- | :--- | :--- |
-| **Token name** | `acme-dns-httpreq-proxy` | Descriptive identifier |
+| **Token name** | `legate-acme-dns` | Descriptive identifier |
 | **Permissions** | `Zone` | Resource type |
 | | `DNS` | Sub-resource |
 | | `Edit` | Required to create and delete TXT records |
 | **Zone Resources** | `Include` | |
 | | `Specific zone` | Do **not** select "All zones" |
 | | Select your domain (e.g. `example.com`) | Target zone |
-| **Client IP Address Filtering** *(Optional)* | `Is in` -> `Your proxy public/egress IP` | Restricts API use to proxy server IP |
+| **Client IP Address Filtering** *(Optional)* | `Is in` -> `Your Legate egress IP` | Restricts API use to proxy server IP |
 | **TTL** | Set expiration or keep active | Align with rotation policies |
 
 ### 4. Review and Create
@@ -48,7 +48,7 @@ Configure the token parameters as follows:
 
 ## Testing Your Token
 
-Verify the token using `curl` before configuring `acme-dns-httpreq-proxy`:
+Verify the token using `curl` before configuring Legate:
 
 ### 1. Verify Token Validity
 ```bash
@@ -91,14 +91,26 @@ curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=example.com" \
 
 ---
 
-## Configuring the Proxy
+## Configuring Legate
 
-Assign the token to the `CLOUDFLARE_API_TOKEN` environment variable:
+Assign the token in your `config.yaml`:
+
+```yaml
+providers:
+  cf-main:
+    type: cloudflare
+    api_token: "${CLOUDFLARE_API_TOKEN}"
+    zone_id: "023e105f4ecef8ad9ca31a8372d0c353" # optional pre-cached zone ID
+
+domains:
+  example.com:
+    provider: cf-main
+```
+
+Or via environment variables for single-provider mode:
 
 ```bash
 export CLOUDFLARE_API_TOKEN="<YOUR_API_TOKEN>"
 export ALLOWED_DOMAIN="example.com"
-
-# Optional optimization: pre-seed zone ID to skip zone lookup call
 export CLOUDFLARE_ZONE_ID="023e105f4ecef8ad9ca31a8372d0c353"
 ```
