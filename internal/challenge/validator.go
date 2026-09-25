@@ -21,6 +21,8 @@ const (
 var (
 	// labelRegex matches standard DNS labels (RFC 1123): lowercase alphanumeric, hyphens allowed internally.
 	labelRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// challengeValueRegex matches valid ACME DNS-01 base64/base64url challenge tokens (RFC 8555 Section 8.4)
+	challengeValueRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
 // ValidateFQDN checks whether a given FQDN is valid, safe, and belongs to the allowed domain.
@@ -134,7 +136,7 @@ func ValidateForUser(user string, reqFQDN string, allowedSubdomains []string) er
 	return fmt.Errorf("user %q is not authorized for domain %q (allowed patterns: %v)", user, domainPart, allowedSubdomains)
 }
 
-// ValidateChallengeValue validates that the ACME TXT value is non-empty and contains safe characters.
+// ValidateChallengeValue validates that the ACME TXT value is non-empty, correctly bounded, and adheres to base64url characters.
 func ValidateChallengeValue(value string) error {
 	v := strings.TrimSpace(value)
 	if v == "" {
@@ -144,11 +146,8 @@ func ValidateChallengeValue(value string) error {
 		return fmt.Errorf("challenge value exceeds maximum length of %d characters", MaxValueLength)
 	}
 
-	// Check for dangerous control characters (CRLF, null byte) to prevent header or command injection
-	for _, r := range v {
-		if r < 32 || r == 127 {
-			return errors.New("challenge value contains invalid control characters")
-		}
+	if !challengeValueRegex.MatchString(v) {
+		return errors.New("challenge value contains invalid characters (must be valid base64url characters: [a-zA-Z0-9_-])")
 	}
 	return nil
 }

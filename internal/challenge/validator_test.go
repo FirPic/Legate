@@ -262,6 +262,9 @@ func TestValidateChallengeValue(t *testing.T) {
 		{"Null byte injection", "token\x00extra", true},
 		{"CRLF injection", "token\r\nextra", true},
 		{"DEL control char", "token\x7fextra", true},
+		{"Spaces forbidden", "token value with spaces", true},
+		{"Quotes forbidden", "token\"quote", true},
+		{"Special chars forbidden", "token;injection", true},
 		{"Too long token", strings.Repeat("a", 513), true},
 	}
 
