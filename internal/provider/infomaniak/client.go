@@ -221,7 +221,7 @@ func (c *Client) doRequest(req *http.Request, endpoint string, target interface{
 		c.observer.ObserveDNSRequest("infomaniak", endpoint, statusStr)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if err != nil {
 		return fmt.Errorf("read response body: %w", err)
 	}

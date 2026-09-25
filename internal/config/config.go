@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -169,6 +170,16 @@ func LoadFromFile(filePath string) (*Config, error) {
 			}
 		default:
 			return nil, fmt.Errorf("provider %q has unsupported type %q (supported: cloudflare, ionos, infomaniak)", pName, pCfg.Type)
+		}
+
+		if pCfg.BaseURL != "" {
+			u, err := url.Parse(pCfg.BaseURL)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+				return nil, fmt.Errorf("provider %q: invalid base_url %q", pName, pCfg.BaseURL)
+			}
+			if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+				return nil, fmt.Errorf("provider %q: base_url must use https scheme to protect API credentials (got %q)", pName, pCfg.BaseURL)
+			}
 		}
 	}
 

@@ -265,11 +265,33 @@ domains:
 users:
   u:
     password: "p"
+    allowed_subdomains: ["*"]
 `
 	f2 := filepath.Join(tmpDir, "c2.yaml")
 	_ = os.WriteFile(f2, []byte(yamlBadRef), 0600)
 	if _, err := LoadFromFile(f2); err == nil {
 		t.Errorf("expected error for non-existent provider reference")
+	}
+
+	// Missing allowed_subdomains rejected (Fail-Closed)
+	yamlMissingSubdomains := `
+server:
+  port: "8080"
+providers:
+  cf:
+    type: cloudflare
+    api_token: "tok"
+domains:
+  example.com:
+    provider: cf
+users:
+  u:
+    password: "p"
+`
+	fMissingSub := filepath.Join(tmpDir, "c_missing_sub.yaml")
+	_ = os.WriteFile(fMissingSub, []byte(yamlMissingSubdomains), 0600)
+	if _, err := LoadFromFile(fMissingSub); err == nil {
+		t.Errorf("expected error for user with missing allowed_subdomains")
 	}
 
 	// Unknown provider type
@@ -286,10 +308,34 @@ domains:
 users:
   u:
     password: "p"
+    allowed_subdomains: ["*"]
 `
 	f3 := filepath.Join(tmpDir, "c3.yaml")
 	_ = os.WriteFile(f3, []byte(yamlBadType), 0600)
 	if _, err := LoadFromFile(f3); err == nil {
 		t.Errorf("expected error for unknown provider type")
+	}
+
+	// Insecure remote HTTP base_url rejected
+	yamlInsecureURL := `
+server:
+  port: "8080"
+providers:
+  cf:
+    type: cloudflare
+    api_token: "tok"
+    base_url: "http://api.cloudflare.com/client/v4"
+domains:
+  example.com:
+    provider: cf
+users:
+  u:
+    password: "p"
+    allowed_subdomains: ["*"]
+`
+	f4 := filepath.Join(tmpDir, "c4.yaml")
+	_ = os.WriteFile(f4, []byte(yamlInsecureURL), 0600)
+	if _, err := LoadFromFile(f4); err == nil {
+		t.Errorf("expected error for insecure remote http base_url")
 	}
 }
