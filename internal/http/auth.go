@@ -98,7 +98,7 @@ func (a *Authenticator) writeUnauthorized(w http.ResponseWriter, r *http.Request
 		"reason", reason,
 	)
 
-	w.Header().Set("WWW-Authenticate", `Basic realm="acme-dns-httpreq-proxy", charset="UTF-8"`)
+	w.Header().Set("WWW-Authenticate", `Basic realm="legate", charset="UTF-8"`)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = json.NewEncoder(w).Encode(map[string]string{

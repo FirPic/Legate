@@ -87,8 +87,8 @@ func TestAuthenticator_Middleware(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401, got %d", rr.Code)
 	}
-	if rr.Header().Get("WWW-Authenticate") == "" {
-		t.Error("expected WWW-Authenticate header")
+	if rr.Header().Get("WWW-Authenticate") != `Basic realm="legate", charset="UTF-8"` {
+		t.Errorf("expected realm legate, got %q", rr.Header().Get("WWW-Authenticate"))
 	}
 
 	// 2. Invalid credentials
