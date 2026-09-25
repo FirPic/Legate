@@ -8,26 +8,213 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/cloudflare"
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/infomaniak"
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/ionos"
+	"gopkg.in/yaml.v3"
 )
 
 // UserConfig defines credentials and authorized subdomain patterns for an ACME client.
 type UserConfig struct {
-	Password          string   `json:"password"`
-	AllowedSubdomains []string `json:"allowed_subdomains"`
+	Password          string   `yaml:"password" json:"password"`
+	AllowedSubdomains []string `yaml:"allowed_subdomains" json:"allowed_subdomains"`
 }
 
-// Config holds the application configuration.
+// ServerConfig defines HTTP and operational server parameters.
+type ServerConfig struct {
+	Port               string `yaml:"port" json:"port"`
+	BindAddr           string `yaml:"bind_addr" json:"bind_addr"`
+	AdminPort          string `yaml:"admin_port" json:"admin_port"`
+	AdminBindAddr      string `yaml:"admin_bind_addr" json:"admin_bind_addr"`
+	RateLimitPerMinute int    `yaml:"rate_limit_per_minute" json:"rate_limit_per_minute"`
+	LogLevel           string `yaml:"log_level" json:"log_level"`
+}
+
+// ProviderConfig defines parameters for a single DNS provider instance.
+type ProviderConfig struct {
+	Type     string `yaml:"type" json:"type"` // "cloudflare", "ionos", "infomaniak"
+	APIToken string `yaml:"api_token" json:"api_token"`
+	APIKey   string `yaml:"api_key" json:"api_key"`
+	ZoneID   string `yaml:"zone_id" json:"zone_id"`
+	BaseURL  string `yaml:"base_url" json:"base_url"`
+}
+
+// DomainConfig binds a domain zone to a configured provider.
+type DomainConfig struct {
+	Provider string `yaml:"provider" json:"provider"`
+}
+
+// Config holds the full application configuration.
 type Config struct {
-	Port                string
-	BindAddr            string
-	AdminPort           string
-	AdminBindAddr       string
-	RateLimitPerMinute  int
-	CloudflareAPIToken  string
-	CloudflareZoneID    string
-	AllowedDomain       string
-	Users               map[string]UserConfig
-	LogLevel            string
+	Server    ServerConfig              `yaml:"server" json:"server"`
+	Providers map[string]ProviderConfig `yaml:"providers" json:"providers"`
+	Domains   map[string]DomainConfig   `yaml:"domains" json:"domains"`
+	Users     map[string]UserConfig     `yaml:"users" json:"users"`
+
+	// Flat backward-compatibility fields (kept for env-only single provider mode)
+	Port               string
+	BindAddr           string
+	AdminPort          string
+	AdminBindAddr      string
+	RateLimitPerMinute int
+	CloudflareAPIToken string
+	CloudflareZoneID   string
+	AllowedDomain      string
+	LogLevel           string
+}
+
+// Load loads configuration from either a YAML file or environment variables.
+// If configPath is specified (or CONFIG_FILE env var is set), it loads and parses the YAML file.
+// Otherwise, it falls back to 100% backward-compatible environment variable loading.
+func Load(configPath string) (*Config, error) {
+	targetPath := strings.TrimSpace(configPath)
+	if targetPath == "" {
+		targetPath = strings.TrimSpace(os.Getenv("CONFIG_FILE"))
+	}
+
+	if targetPath != "" {
+		return LoadFromFile(targetPath)
+	}
+
+	return LoadFromEnv()
+}
+
+// LoadFromFile reads and validates a YAML configuration file with environment variable expansion.
+func LoadFromFile(filePath string) (*Config, error) {
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("read config file %q: %w", filePath, err)
+	}
+
+	// Expand ${VAR} and $VAR placeholders using environment variables
+	expanded := os.ExpandEnv(string(raw))
+
+	var fileCfg struct {
+		Server    ServerConfig              `yaml:"server"`
+		Providers map[string]ProviderConfig `yaml:"providers"`
+		Domains   map[string]DomainConfig   `yaml:"domains"`
+		Users     map[string]UserConfig     `yaml:"users"`
+	}
+
+	if err := yaml.Unmarshal([]byte(expanded), &fileCfg); err != nil {
+		return nil, fmt.Errorf("parse config file %q: %w", filePath, err)
+	}
+
+	cfg := &Config{
+		Server:    fileCfg.Server,
+		Providers: fileCfg.Providers,
+		Domains:   fileCfg.Domains,
+		Users:     fileCfg.Users,
+	}
+
+	// Apply defaults for ServerConfig
+	if cfg.Server.Port == "" {
+		cfg.Server.Port = getEnv("PORT", "8080")
+	}
+	if cfg.Server.BindAddr == "" {
+		cfg.Server.BindAddr = getEnv("BIND_ADDR", "0.0.0.0")
+	}
+	if cfg.Server.AdminPort == "" {
+		cfg.Server.AdminPort = getEnv("ADMIN_PORT", "9090")
+	}
+	if cfg.Server.AdminBindAddr == "" {
+		cfg.Server.AdminBindAddr = getEnv("ADMIN_BIND_ADDR", "127.0.0.1")
+	}
+	if cfg.Server.RateLimitPerMinute <= 0 {
+		rateLimitStr := getEnv("RATE_LIMIT_PER_MINUTE", "60")
+		if rl, err := strconv.Atoi(rateLimitStr); err == nil && rl > 0 {
+			cfg.Server.RateLimitPerMinute = rl
+		} else {
+			cfg.Server.RateLimitPerMinute = 60
+		}
+	}
+	if cfg.Server.LogLevel == "" {
+		cfg.Server.LogLevel = strings.ToLower(getEnv("LOG_LEVEL", "info"))
+	}
+
+	// Validate ports
+	portNum, err := strconv.Atoi(cfg.Server.Port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return nil, fmt.Errorf("invalid server port %q: must be between 1 and 65535", cfg.Server.Port)
+	}
+
+	if cfg.Server.AdminPort != "" {
+		adminPortNum, err := strconv.Atoi(cfg.Server.AdminPort)
+		if err != nil || adminPortNum < 1 || adminPortNum > 65535 {
+			return nil, fmt.Errorf("invalid admin port %q: must be between 1 and 65535", cfg.Server.AdminPort)
+		}
+	}
+
+	// Validate providers
+	if len(cfg.Providers) == 0 {
+		return nil, errors.New("no providers configured in config file")
+	}
+
+	for pName, pCfg := range cfg.Providers {
+		pType := strings.ToLower(strings.TrimSpace(pCfg.Type))
+		switch pType {
+		case "cloudflare":
+			if pCfg.APIToken == "" {
+				return nil, fmt.Errorf("provider %q (cloudflare): missing api_token", pName)
+			}
+		case "ionos":
+			if pCfg.APIKey == "" {
+				return nil, fmt.Errorf("provider %q (ionos): missing api_key", pName)
+			}
+		case "infomaniak":
+			if pCfg.APIToken == "" {
+				return nil, fmt.Errorf("provider %q (infomaniak): missing api_token", pName)
+			}
+		default:
+			return nil, fmt.Errorf("provider %q has unsupported type %q (supported: cloudflare, ionos, infomaniak)", pName, pCfg.Type)
+		}
+	}
+
+	// Validate domains
+	if len(cfg.Domains) == 0 {
+		return nil, errors.New("no domains configured in config file")
+	}
+
+	for dName, dCfg := range cfg.Domains {
+		normD := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(dName), "."))
+		if normD == "" || strings.ContainsAny(normD, " /\\:*?\"<>|") {
+			return nil, fmt.Errorf("invalid domain format %q in domains configuration", dName)
+		}
+		if dCfg.Provider == "" {
+			return nil, fmt.Errorf("domain %q has no provider specified", dName)
+		}
+		if _, exists := cfg.Providers[dCfg.Provider]; !exists {
+			return nil, fmt.Errorf("domain %q references undefined provider %q", dName, dCfg.Provider)
+		}
+	}
+
+	// Validate users
+	if len(cfg.Users) == 0 {
+		// Allow loading users from environment fallback if not in file
+		cfg.Users = make(map[string]UserConfig)
+		loadUsers(cfg.Users)
+	}
+
+	if len(cfg.Users) == 0 {
+		return nil, errors.New("no authorized users configured in config file or environment")
+	}
+
+	for u, uCfg := range cfg.Users {
+		if strings.TrimSpace(uCfg.Password) == "" {
+			return nil, fmt.Errorf("user %q has empty password", u)
+		}
+		if len(uCfg.AllowedSubdomains) == 0 {
+			uCfg.AllowedSubdomains = []string{"*"}
+			cfg.Users[u] = uCfg
+		}
+	}
+
+	// Sync flat fields for backward compatibility
+	cfg.syncFlatFields()
+
+	return cfg, nil
 }
 
 // LoadFromEnv loads and validates configuration from environment variables and secret files.
@@ -48,6 +235,8 @@ func LoadFromEnv() (*Config, error) {
 		AllowedDomain:      strings.TrimSpace(os.Getenv("ALLOWED_DOMAIN")),
 		LogLevel:           strings.ToLower(getEnv("LOG_LEVEL", "info")),
 		Users:              make(map[string]UserConfig),
+		Providers:          make(map[string]ProviderConfig),
+		Domains:            make(map[string]DomainConfig),
 	}
 
 	// 1. Validate Challenge Service Port
@@ -64,7 +253,7 @@ func LoadFromEnv() (*Config, error) {
 		}
 	}
 
-	// 3. Load Cloudflare Token (support file-based secret fallback)
+	// 3. Load Cloudflare Token
 	cfg.CloudflareAPIToken = loadCloudflareToken()
 	if cfg.CloudflareAPIToken == "" {
 		return nil, errors.New("CLOUDFLARE_API_TOKEN or CLOUDFLARE_API_TOKEN_FILE is required")
@@ -85,16 +274,124 @@ func LoadFromEnv() (*Config, error) {
 		return nil, errors.New("no authorized users configured: set USERS or USER_<NAME>_PASS env variables")
 	}
 
+	// Populate Server, Providers and Domains maps for uniform Registry building
+	cfg.Server = ServerConfig{
+		Port:               cfg.Port,
+		BindAddr:           cfg.BindAddr,
+		AdminPort:          cfg.AdminPort,
+		AdminBindAddr:      cfg.AdminBindAddr,
+		RateLimitPerMinute: cfg.RateLimitPerMinute,
+		LogLevel:           cfg.LogLevel,
+	}
+
+	cfg.Providers["cloudflare-env"] = ProviderConfig{
+		Type:     "cloudflare",
+		APIToken: cfg.CloudflareAPIToken,
+		ZoneID:   cfg.CloudflareZoneID,
+	}
+
+	cfg.Domains[cfg.AllowedDomain] = DomainConfig{
+		Provider: "cloudflare-env",
+	}
+
 	return cfg, nil
+}
+
+func (c *Config) syncFlatFields() {
+	c.Port = c.Server.Port
+	c.BindAddr = c.Server.BindAddr
+	c.AdminPort = c.Server.AdminPort
+	c.AdminBindAddr = c.Server.AdminBindAddr
+	c.RateLimitPerMinute = c.Server.RateLimitPerMinute
+	c.LogLevel = c.Server.LogLevel
+
+	// If there is only one domain, populate AllowedDomain for backward compatibility
+	if len(c.Domains) == 1 {
+		for d := range c.Domains {
+			c.AllowedDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(d), "."))
+		}
+	}
+}
+
+// BuildRegistry constructs and returns an initialized provider.Registry according to the configured domains and providers.
+func (c *Config) BuildRegistry(obs any) (*provider.Registry, error) {
+	reg := provider.NewRegistry()
+
+	for domain, dCfg := range c.Domains {
+		normDomain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+		pCfg, exists := c.Providers[dCfg.Provider]
+		if !exists {
+			return nil, fmt.Errorf("domain %q references undefined provider %q", normDomain, dCfg.Provider)
+		}
+
+		pType := strings.ToLower(strings.TrimSpace(pCfg.Type))
+		var p provider.DNSProvider
+
+		switch pType {
+		case "cloudflare":
+			var customBase []string
+			if pCfg.BaseURL != "" {
+				customBase = append(customBase, pCfg.BaseURL)
+			}
+			cfClient := cloudflare.NewClient(pCfg.APIToken, normDomain, customBase...)
+			if pCfg.ZoneID != "" {
+				cfClient.SetZoneID(normDomain, pCfg.ZoneID)
+			}
+			if observer, ok := obs.(cloudflare.Observer); ok {
+				cfClient.SetObserver(observer)
+			}
+			p = cfClient
+
+		case "ionos":
+			var customBase []string
+			if pCfg.BaseURL != "" {
+				customBase = append(customBase, pCfg.BaseURL)
+			}
+			ioClient := ionos.NewClient(pCfg.APIKey, normDomain, customBase...)
+			if pCfg.ZoneID != "" {
+				ioClient.SetZoneID(normDomain, pCfg.ZoneID)
+			}
+			if observer, ok := obs.(ionos.Observer); ok {
+				ioClient.SetObserver(observer)
+			}
+			p = ioClient
+
+		case "infomaniak":
+			var customBase []string
+			if pCfg.BaseURL != "" {
+				customBase = append(customBase, pCfg.BaseURL)
+			}
+			infoClient := infomaniak.NewClient(pCfg.APIToken, normDomain, customBase...)
+			if observer, ok := obs.(infomaniak.Observer); ok {
+				infoClient.SetObserver(observer)
+			}
+			p = infoClient
+
+		default:
+			return nil, fmt.Errorf("unsupported provider type %q for domain %q", pCfg.Type, normDomain)
+		}
+
+		if err := reg.Register(normDomain, p); err != nil {
+			return nil, fmt.Errorf("register domain %q: %w", normDomain, err)
+		}
+	}
+
+	return reg, nil
 }
 
 // ListenAddr returns the formatted host:port string for the public challenge API.
 func (c *Config) ListenAddr() string {
+	if c.Server.Port != "" {
+		return net.JoinHostPort(c.Server.BindAddr, c.Server.Port)
+	}
 	return net.JoinHostPort(c.BindAddr, c.Port)
 }
 
 // AdminListenAddr returns the formatted host:port string for the internal admin API.
 func (c *Config) AdminListenAddr() string {
+	if c.Server.AdminPort != "" {
+		return net.JoinHostPort(c.Server.AdminBindAddr, c.Server.AdminPort)
+	}
 	return net.JoinHostPort(c.AdminBindAddr, c.AdminPort)
 }
 
@@ -106,22 +403,18 @@ func getEnv(key, fallback string) string {
 }
 
 func loadCloudflareToken() string {
-	// 1. Check file-based secret (ANSSI BP-028 best practice to prevent /proc/$PID/environ leaks)
 	if tokenFile := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN_FILE")); tokenFile != "" {
 		content, err := os.ReadFile(tokenFile)
 		if err == nil && len(strings.TrimSpace(string(content))) > 0 {
 			return strings.TrimSpace(string(content))
 		}
 	}
-	// 2. Direct environment variable
 	return strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
 }
 
 func loadUsers(users map[string]UserConfig) {
-	// 1. Check USERS environment variable
 	if usersEnv := strings.TrimSpace(os.Getenv("USERS")); usersEnv != "" {
 		if strings.HasPrefix(usersEnv, "{") {
-			// Try parsing as JSON UserConfig map: {"traefik":{"password":"...","allowed_subdomains":[...]}}
 			var structuredMap map[string]UserConfig
 			if err := json.Unmarshal([]byte(usersEnv), &structuredMap); err == nil && len(structuredMap) > 0 {
 				for u, cfg := range structuredMap {
@@ -134,7 +427,6 @@ func loadUsers(users map[string]UserConfig) {
 					}
 				}
 			} else {
-				// Fallback: simple flat JSON map: {"traefik":"password"}
 				var flatMap map[string]string
 				if err := json.Unmarshal([]byte(usersEnv), &flatMap); err == nil {
 					for u, p := range flatMap {
@@ -149,7 +441,6 @@ func loadUsers(users map[string]UserConfig) {
 				}
 			}
 		} else {
-			// Comma separated list of user:pass or user:pass:subdomain1;subdomain2
 			pairs := strings.Split(usersEnv, ",")
 			for _, pair := range pairs {
 				pair = strings.TrimSpace(pair)
@@ -182,7 +473,6 @@ func loadUsers(users map[string]UserConfig) {
 		}
 	}
 
-	// 2. Check USER_<NAME>_PASS or USER_<NAME>_PASSWORD environment variables
 	for _, env := range os.Environ() {
 		parts := strings.SplitN(env, "=", 2)
 		if len(parts) != 2 {
@@ -203,7 +493,6 @@ func loadUsers(users map[string]UserConfig) {
 
 			if username != "" {
 				u := strings.ToLower(username)
-				// Check if USER_<NAME>_SUBDOMAINS is defined
 				subdomains := []string{"*"}
 				if subEnv := os.Getenv("USER_" + username + "_SUBDOMAINS"); strings.TrimSpace(subEnv) != "" {
 					rawSubs := strings.Split(subEnv, ",")

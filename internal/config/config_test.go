@@ -21,6 +21,9 @@ func clearEnv() {
 	os.Unsetenv("USER_TEST_PASS")
 	os.Unsetenv("USER_TRAEFIK_DMZ_PASS")
 	os.Unsetenv("USER_TRAEFIK_DMZ_SUBDOMAINS")
+	os.Unsetenv("TEST_CF_TOKEN")
+	os.Unsetenv("TEST_IONOS_KEY")
+	os.Unsetenv("TEST_INFOMANIAK_TOKEN")
 }
 
 func TestLoadFromEnv_Success(t *testing.T) {
@@ -60,6 +63,15 @@ func TestLoadFromEnv_Success(t *testing.T) {
 	}
 	if len(cfg.Users["traefik"].AllowedSubdomains) != 2 {
 		t.Errorf("expected 2 allowed subdomains for traefik, got %d", len(cfg.Users["traefik"].AllowedSubdomains))
+	}
+
+	// Verify BuildRegistry works on env-loaded config
+	reg, err := cfg.BuildRegistry(nil)
+	if err != nil {
+		t.Fatalf("unexpected error building registry from env config: %v", err)
+	}
+	if reg.Count() != 1 {
+		t.Errorf("expected 1 registered domain, got %d", reg.Count())
 	}
 }
 
@@ -117,5 +129,167 @@ func TestLoadFromEnv_TokenFileFallback(t *testing.T) {
 	}
 	if len(u.AllowedSubdomains) != 2 {
 		t.Errorf("expected 2 subdomains from USER_TRAEFIK_DMZ_SUBDOMAINS, got %v", u.AllowedSubdomains)
+	}
+}
+
+func TestLoadFromFile_YAMLWithEnvExpansion(t *testing.T) {
+	clearEnv()
+	defer clearEnv()
+
+	os.Setenv("TEST_CF_TOKEN", "expanded-cf-token")
+	os.Setenv("TEST_IONOS_KEY", "prefix.expanded-ionos-key")
+	os.Setenv("TEST_INFOMANIAK_TOKEN", "expanded-infomaniak-token")
+
+	yamlContent := `
+server:
+  port: "8085"
+  bind_addr: "127.0.0.1"
+  admin_port: "9095"
+  admin_bind_addr: "127.0.0.1"
+  rate_limit_per_minute: 100
+  log_level: "debug"
+
+providers:
+  my-cloudflare:
+    type: cloudflare
+    api_token: "${TEST_CF_TOKEN}"
+    zone_id: "cf-zone-id"
+
+  my-ionos:
+    type: ionos
+    api_key: "${TEST_IONOS_KEY}"
+
+  my-infomaniak:
+    type: infomaniak
+    api_token: "${TEST_INFOMANIAK_TOKEN}"
+
+domains:
+  example.com:
+    provider: my-cloudflare
+  mondomaine.fr:
+    provider: my-ionos
+  entreprise.ch:
+    provider: my-infomaniak
+
+users:
+  traefik:
+    password: "securepassword"
+    allowed_subdomains: ["*.example.com", "*.mondomaine.fr"]
+`
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configFile, []byte(yamlContent), 0600); err != nil {
+		t.Fatalf("failed to write test yaml: %v", err)
+	}
+
+	cfg, err := Load(configFile)
+	if err != nil {
+		t.Fatalf("unexpected LoadFromFile error: %v", err)
+	}
+
+	if cfg.Server.Port != "8085" || cfg.Port != "8085" {
+		t.Errorf("expected port 8085, got %s / %s", cfg.Server.Port, cfg.Port)
+	}
+	if cfg.Server.RateLimitPerMinute != 100 {
+		t.Errorf("expected rate limit 100, got %d", cfg.Server.RateLimitPerMinute)
+	}
+
+	// Verify secret expansion
+	if cfg.Providers["my-cloudflare"].APIToken != "expanded-cf-token" {
+		t.Errorf("expected CF token 'expanded-cf-token', got %q", cfg.Providers["my-cloudflare"].APIToken)
+	}
+	if cfg.Providers["my-ionos"].APIKey != "prefix.expanded-ionos-key" {
+		t.Errorf("expected IONOS key 'prefix.expanded-ionos-key', got %q", cfg.Providers["my-ionos"].APIKey)
+	}
+	if cfg.Providers["my-infomaniak"].APIToken != "expanded-infomaniak-token" {
+		t.Errorf("expected Infomaniak token 'expanded-infomaniak-token', got %q", cfg.Providers["my-infomaniak"].APIToken)
+	}
+
+	// Verify Registry building
+	reg, err := cfg.BuildRegistry(nil)
+	if err != nil {
+		t.Fatalf("unexpected error building registry: %v", err)
+	}
+
+	if reg.Count() != 3 {
+		t.Fatalf("expected 3 registered domains in registry, got %d", reg.Count())
+	}
+
+	// Check domain resolution for all 3
+	_, base, err := reg.Resolve("_acme-challenge.sub.example.com")
+	if err != nil || base != "example.com" {
+		t.Errorf("expected example.com, got %q, err: %v", base, err)
+	}
+
+	_, base, err = reg.Resolve("_acme-challenge.app.mondomaine.fr")
+	if err != nil || base != "mondomaine.fr" {
+		t.Errorf("expected mondomaine.fr, got %q, err: %v", base, err)
+	}
+
+	_, base, err = reg.Resolve("_acme-challenge.vpn.entreprise.ch")
+	if err != nil || base != "entreprise.ch" {
+		t.Errorf("expected entreprise.ch, got %q, err: %v", base, err)
+	}
+}
+
+func TestLoadFromFile_ValidationErrors(t *testing.T) {
+	clearEnv()
+	defer clearEnv()
+
+	tmpDir := t.TempDir()
+
+	// Missing provider
+	yamlMissingProvider := `
+server:
+  port: "8080"
+providers: {}
+domains: {}
+`
+	f1 := filepath.Join(tmpDir, "c1.yaml")
+	_ = os.WriteFile(f1, []byte(yamlMissingProvider), 0600)
+	if _, err := LoadFromFile(f1); err == nil {
+		t.Errorf("expected error for empty providers")
+	}
+
+	// Domain referencing non-existent provider
+	yamlBadRef := `
+server:
+  port: "8080"
+providers:
+  cf:
+    type: cloudflare
+    api_token: "tok"
+domains:
+  example.com:
+    provider: non-existent-provider
+users:
+  u:
+    password: "p"
+`
+	f2 := filepath.Join(tmpDir, "c2.yaml")
+	_ = os.WriteFile(f2, []byte(yamlBadRef), 0600)
+	if _, err := LoadFromFile(f2); err == nil {
+		t.Errorf("expected error for non-existent provider reference")
+	}
+
+	// Unknown provider type
+	yamlBadType := `
+server:
+  port: "8080"
+providers:
+  bad:
+    type: unknown-provider-xyz
+    api_token: "tok"
+domains:
+  example.com:
+    provider: bad
+users:
+  u:
+    password: "p"
+`
+	f3 := filepath.Join(tmpDir, "c3.yaml")
+	_ = os.WriteFile(f3, []byte(yamlBadType), 0600)
+	if _, err := LoadFromFile(f3); err == nil {
+		t.Errorf("expected error for unknown provider type")
 	}
 }
