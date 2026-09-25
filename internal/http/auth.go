@@ -27,22 +27,30 @@ type AuthContext struct {
 
 // Authenticator handles HTTP Basic Authentication using constant-time hashed comparisons.
 type Authenticator struct {
-	users map[string]config.UserConfig
+	users         map[string]config.UserConfig
+	hasArgonUsers bool
 }
 
 // NewAuthenticator creates an Authenticator with a normalized map of user configurations.
 func NewAuthenticator(users map[string]config.UserConfig) *Authenticator {
 	copyUsers := make(map[string]config.UserConfig, len(users))
+	hasArgon := false
 	for u, cfg := range users {
 		copyUsers[strings.ToLower(strings.TrimSpace(u))] = cfg
+		if IsArgon2idHash(cfg.Password) {
+			hasArgon = true
+		}
 	}
-	return &Authenticator{users: copyUsers}
+	return &Authenticator{
+		users:         copyUsers,
+		hasArgonUsers: hasArgon,
+	}
 }
 
 // Verify checks the provided username and password.
 // If the stored password is an Argon2id hash ($argon2id$), it performs constant-time Argon2id verification.
 // Otherwise, it falls back to SHA-256 constant-time comparison for legacy plaintext passwords.
-// To prevent timing-based user enumeration, non-existent users trigger an equivalent evaluation.
+// To prevent timing-based user enumeration, non-existent users trigger an evaluation of equal cryptographic cost.
 func (a *Authenticator) Verify(username, password string) (*config.UserConfig, bool) {
 	u := strings.ToLower(strings.TrimSpace(username))
 	expectedCfg, userFound := a.users[u]
@@ -65,10 +73,14 @@ func (a *Authenticator) Verify(username, password string) (*config.UserConfig, b
 		return nil, false
 	}
 
-	// Prevent user enumeration by evaluating against a dummy password hash
-	hProvided := sha256.Sum256([]byte(password))
-	hExpected := sha256.Sum256([]byte(dummySecret))
-	_ = subtle.ConstantTimeCompare(hProvided[:], hExpected[:])
+	// Prevent user enumeration by evaluating against a dummy password hash matching the realm's primary cipher
+	if a.hasArgonUsers {
+		_, _ = VerifyPassword(password, DummyArgon2idHash)
+	} else {
+		hProvided := sha256.Sum256([]byte(password))
+		hExpected := sha256.Sum256([]byte(dummySecret))
+		_ = subtle.ConstantTimeCompare(hProvided[:], hExpected[:])
+	}
 	return nil, false
 }
 
