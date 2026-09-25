@@ -1,0 +1,20 @@
+# Binaries
+/server
+/acme-dns-httpreq-proxy
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
