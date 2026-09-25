@@ -197,6 +197,7 @@ func main() {
 		slog.Info("main server stopped")
 	}
 
+	appServer.Close()
 	slog.Info("server shutdown complete")
 }
 

@@ -62,8 +62,18 @@ func NewServerWithRateLimits(
 	}
 
 	s.routes()
-	s.handler = s.loggingMiddleware(s.recovererMiddleware(s.mux))
+	s.handler = s.securityHeadersMiddleware(s.loggingMiddleware(s.recovererMiddleware(s.mux)))
 	return s
+}
+
+// Close gracefully terminates background rate limiter cleanup goroutines.
+func (s *Server) Close() {
+	if s.userRateLimiter != nil {
+		s.userRateLimiter.Stop()
+	}
+	if s.ipRateLimiter != nil {
+		s.ipRateLimiter.Stop()
+	}
 }
 
 // NewSingleProviderServer creates a Server for a single domain and provider (convenience & backward compatibility).
@@ -179,6 +189,17 @@ func (s *Server) recovererMiddleware(next http.Handler) http.Handler {
 				http.Error(w, `{"status":"error","error":"internal server error"}`, http.StatusInternalServerError)
 			}
 		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

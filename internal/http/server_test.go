@@ -172,6 +172,14 @@ func TestPresent_Success(t *testing.T) {
 		t.Fatalf("unexpected response content: %+v", resp)
 	}
 
+	// Verify defensive HTTP security headers
+	if cc := rr.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("expected Cache-Control: no-store header, got %q", cc)
+	}
+	if xcto := rr.Header().Get("X-Content-Type-Options"); xcto != "nosniff" {
+		t.Errorf("expected X-Content-Type-Options: nosniff header, got %q", xcto)
+	}
+
 	// Verify tracker holds record
 	recID, found := tr.Get("_acme-challenge.sub.dmz.firpic.fr", "challenge-test-value-123")
 	if !found || recID != resp.RecordID {
