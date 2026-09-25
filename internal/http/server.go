@@ -62,9 +62,9 @@ func NewSingleProviderServer(
 }
 
 func (s *Server) routes() {
-	// Protected Lego httpreq challenge endpoints with Basic Auth and Rate Limiting
-	presentChain := s.rateLimiter.Middleware(s.auth.Middleware(http.HandlerFunc(s.handlePresent)))
-	cleanupChain := s.rateLimiter.Middleware(s.auth.Middleware(http.HandlerFunc(s.handleCleanup)))
+	// Protected Lego httpreq challenge endpoints: Authenticate first, then enforce per-user Rate Limiting
+	presentChain := s.auth.Middleware(s.rateLimiter.Middleware(http.HandlerFunc(s.handlePresent)))
+	cleanupChain := s.auth.Middleware(s.rateLimiter.Middleware(http.HandlerFunc(s.handleCleanup)))
 
 	s.mux.Handle("POST /present", presentChain)
 	s.mux.Handle("POST /cleanup", cleanupChain)

@@ -254,6 +254,10 @@ func TestRateLimiter(t *testing.T) {
 			Password:          "secret123",
 			AllowedSubdomains: []string{"*"},
 		},
+		"other_user": {
+			Password:          "otherpass",
+			AllowedSubdomains: []string{"*"},
+		},
 	}
 	mockDNS := newMockDNSProvider()
 	tr := tracker.New()
@@ -297,6 +301,15 @@ func TestRateLimiter(t *testing.T) {
 	}
 	if rr3.Header().Get("Retry-After") == "" {
 		t.Error("expected Retry-After header in 429 response")
+	}
+
+	// 4th request by a DIFFERENT user -> allowed (independent per-user bucket)
+	req4 := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req4.SetBasicAuth("other_user", "otherpass")
+	rr4 := httptest.NewRecorder()
+	srv.ServeHTTP(rr4, req4)
+	if rr4.Code != http.StatusOK {
+		t.Fatalf("request 4 by different user expected 200, got %d", rr4.Code)
 	}
 }
 
