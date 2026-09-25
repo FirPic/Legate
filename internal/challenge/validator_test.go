@@ -160,6 +160,88 @@ func TestValidateFQDN(t *testing.T) {
 	}
 }
 
+func TestValidateForUser(t *testing.T) {
+	dmzUser := "traefik_dmz"
+	dmzPatterns := []string{"*.dmz.firpic.fr", "dmz.firpic.fr"}
+
+	testCases := []struct {
+		name        string
+		user        string
+		patterns    []string
+		fqdn        string
+		expectError bool
+	}{
+		{
+			name:        "Authorized direct child subdomain",
+			user:        dmzUser,
+			patterns:    dmzPatterns,
+			fqdn:        "_acme-challenge.traefik.dmz.firpic.fr",
+			expectError: false,
+		},
+		{
+			name:        "Authorized nested child subdomain",
+			user:        dmzUser,
+			patterns:    dmzPatterns,
+			fqdn:        "_acme-challenge.api.nested.dmz.firpic.fr.",
+			expectError: false,
+		},
+		{
+			name:        "Authorized exact subdomain",
+			user:        dmzUser,
+			patterns:    dmzPatterns,
+			fqdn:        "_acme-challenge.dmz.firpic.fr",
+			expectError: false,
+		},
+		{
+			name:        "Attack: DMZ user attempting root apex",
+			user:        dmzUser,
+			patterns:    dmzPatterns,
+			fqdn:        "_acme-challenge.firpic.fr",
+			expectError: true,
+		},
+		{
+			name:        "Attack: DMZ user attempting security zone",
+			user:        dmzUser,
+			patterns:    dmzPatterns,
+			fqdn:        "_acme-challenge.vault.sec.firpic.fr",
+			expectError: true,
+		},
+		{
+			name:        "Attack: DMZ user attempting internal infra zone",
+			user:        dmzUser,
+			patterns:    dmzPatterns,
+			fqdn:        "_acme-challenge.proxmox.infra.firpic.fr",
+			expectError: true,
+		},
+		{
+			name:        "Admin user with wildcard",
+			user:        "admin",
+			patterns:    []string{"*"},
+			fqdn:        "_acme-challenge.firpic.fr",
+			expectError: false,
+		},
+		{
+			name:        "User with empty allowed subdomains",
+			user:        "nobody",
+			patterns:    []string{},
+			fqdn:        "_acme-challenge.test.firpic.fr",
+			expectError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateForUser(tc.user, tc.fqdn, tc.patterns)
+			if tc.expectError && err == nil {
+				t.Errorf("expected authorization error for user %s on %s, got nil", tc.user, tc.fqdn)
+			}
+			if !tc.expectError && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateChallengeValue(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -206,6 +288,22 @@ func TestResolveAndValidate(t *testing.T) {
 		}
 		if res.Value != "challenge-value-test-123" {
 			t.Errorf("expected value, got %s", res.Value)
+		}
+	})
+
+	t.Run("RBAC user violation", func(t *testing.T) {
+		_, err := ResolveAndValidateForUser(
+			"_acme-challenge.firpic.fr",
+			"val123",
+			"", "", "", allowed,
+			"traefik_dmz",
+			[]string{"*.dmz.firpic.fr"},
+		)
+		if err == nil {
+			t.Fatal("expected RBAC failure for DMZ user requesting apex")
+		}
+		if !strings.Contains(err.Error(), "rbac authorization failed") {
+			t.Errorf("expected 'rbac authorization failed' error, got %v", err)
 		}
 	})
 

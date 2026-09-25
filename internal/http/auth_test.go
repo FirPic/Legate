@@ -4,50 +4,78 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
 )
 
 func TestAuthenticator_Verify(t *testing.T) {
-	users := map[string]string{
-		"traefik_dmz":   "strongpassword1",
-		"traefik_infra": "strongpassword2",
+	users := map[string]config.UserConfig{
+		"traefik_dmz": {
+			Password:          "strongpassword1",
+			AllowedSubdomains: []string{"*.dmz.firpic.fr", "dmz.firpic.fr"},
+		},
+		"traefik_infra": {
+			Password:          "strongpassword2",
+			AllowedSubdomains: []string{"*"},
+		},
 	}
 	auth := NewAuthenticator(users)
 
 	// Valid credentials
-	if !auth.Verify("traefik_dmz", "strongpassword1") {
+	cfg, valid := auth.Verify("traefik_dmz", "strongpassword1")
+	if !valid || cfg == nil {
 		t.Error("expected valid verification for traefik_dmz")
 	}
-	if !auth.Verify("TRAEFIK_DMZ", "strongpassword1") {
+	if len(cfg.AllowedSubdomains) != 2 {
+		t.Errorf("expected 2 subdomains, got %d", len(cfg.AllowedSubdomains))
+	}
+
+	// Case-insensitive username match
+	_, validCase := auth.Verify("TRAEFIK_DMZ", "strongpassword1")
+	if !validCase {
 		t.Error("expected case-insensitive username match")
 	}
 
-	// Invalid password
-	if auth.Verify("traefik_dmz", "wrongpassword") {
+	// Invalid password of equal length
+	_, validBadPass := auth.Verify("traefik_dmz", "wrongpassword1")
+	if validBadPass {
 		t.Error("expected failure on wrong password")
 	}
 
+	// Invalid password of vastly different length (timing attack check)
+	_, validLongPass := auth.Verify("traefik_dmz", strings.Repeat("x", 256))
+	if validLongPass {
+		t.Error("expected failure on long password")
+	}
+
 	// Non-existent user
-	if auth.Verify("unknown_user", "strongpassword1") {
+	_, validUnknown := auth.Verify("unknown_user", "strongpassword1")
+	if validUnknown {
 		t.Error("expected failure on non-existent user")
 	}
 
 	// Empty credentials
-	if auth.Verify("", "") {
+	_, validEmpty := auth.Verify("", "")
+	if validEmpty {
 		t.Error("expected failure on empty credentials")
 	}
 }
 
 func TestAuthenticator_Middleware(t *testing.T) {
-	users := map[string]string{
-		"traefik": "secret123",
+	users := map[string]config.UserConfig{
+		"traefik": {
+			Password:          "secret123",
+			AllowedSubdomains: []string{"*.dmz.firpic.fr"},
+		},
 	}
 	auth := NewAuthenticator(users)
 
 	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user := GetAuthUser(r)
+		authCtx := GetAuthContext(r)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("welcome:" + user))
+		_, _ = w.Write([]byte("welcome:" + authCtx.Username + ":" + authCtx.AllowedSubdomains[0]))
 	})
 
 	handler := auth.Middleware(dummyHandler)
@@ -89,12 +117,15 @@ func TestAuthenticator_Middleware(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rr.Code)
 	}
-	if rr.Body.String() != "welcome:traefik" {
-		t.Fatalf("expected body 'welcome:traefik', got %q", rr.Body.String())
+	if rr.Body.String() != "welcome:traefik:*.dmz.firpic.fr" {
+		t.Fatalf("expected body 'welcome:traefik:*.dmz.firpic.fr', got %q", rr.Body.String())
 	}
 
 	// 5. Basic auth with colon in password
-	users["user2"] = "pass:with:colons"
+	users["user2"] = config.UserConfig{
+		Password:          "pass:with:colons",
+		AllowedSubdomains: []string{"*"},
+	}
 	auth2 := NewAuthenticator(users)
 	handler2 := auth2.Middleware(dummyHandler)
 	req = httptest.NewRequest(http.MethodPost, "/present", nil)

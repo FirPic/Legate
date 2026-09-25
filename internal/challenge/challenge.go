@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 )
 
@@ -37,6 +36,14 @@ type ValidationResult struct {
 // ResolveAndValidate parses raw input fields, derives challenge TXT parameters if raw mode is used,
 // and enforces strict RFC 1123, FQDN allowlist, and value safety rules.
 func ResolveAndValidate(rawFQDN, rawValue, rawDomain, rawToken, rawKeyAuth, allowedDomain string) (*ValidationResult, error) {
+	return ResolveAndValidateForUser(rawFQDN, rawValue, rawDomain, rawToken, rawKeyAuth, allowedDomain, "anonymous", []string{"*"})
+}
+
+// ResolveAndValidateForUser enforces both zone-level validation and user-level subdomain RBAC.
+func ResolveAndValidateForUser(
+	rawFQDN, rawValue, rawDomain, rawToken, rawKeyAuth, allowedDomain, user string,
+	allowedSubdomains []string,
+) (*ValidationResult, error) {
 	fqdn := strings.TrimSpace(rawFQDN)
 	if fqdn == "" && strings.TrimSpace(rawDomain) != "" {
 		// Lego raw mode fallback: compute FQDN from domain
@@ -62,6 +69,10 @@ func ResolveAndValidate(rawFQDN, rawValue, rawDomain, rawToken, rawKeyAuth, allo
 		return nil, fmt.Errorf("invalid fqdn: %w", err)
 	}
 
+	if err := ValidateForUser(user, normFQDN, allowedSubdomains); err != nil {
+		return nil, fmt.Errorf("rbac authorization failed: %w", err)
+	}
+
 	if err := ValidateChallengeValue(value); err != nil {
 		return nil, fmt.Errorf("invalid challenge value: %w", err)
 	}
@@ -70,12 +81,4 @@ func ResolveAndValidate(rawFQDN, rawValue, rawDomain, rawToken, rawKeyAuth, allo
 		FQDN:  normFQDN,
 		Value: value,
 	}, nil
-}
-
-// MaxBodyBytes is the maximum allowed size for request payloads (64 KiB) to prevent memory exhaustion DoS.
-const MaxBodyBytes int64 = 64 * 1024
-
-// LimitReader wraps an io.Reader limiting read bytes to MaxBodyBytes.
-func LimitReader(r io.Reader) io.Reader {
-	return io.LimitReader(r, MaxBodyBytes)
 }

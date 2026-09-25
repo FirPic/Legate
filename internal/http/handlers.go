@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,9 @@ import (
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/challenge"
 )
 
+// MaxRequestBodyBytes defines the strict upper limit for challenge payloads (16 KiB).
+const MaxRequestBodyBytes int64 = 16384
+
 // Response represents the standard JSON API response structure.
 type Response struct {
 	Status   string `json:"status"`
@@ -22,23 +26,13 @@ type Response struct {
 	Error    string `json:"error,omitempty"`
 }
 
-func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":          "ok",
-		"tracked_records": s.tracker.Count(),
-		"allowed_domain":  s.allowedDomain,
-	})
-}
-
 func (s *Server) handlePresent(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	user := GetAuthUser(r)
 
-	res, statusErr := s.parsePresentRequest(r)
+	res, statusErr := s.parsePresentRequest(w, r)
 	if statusErr != nil {
-		s.recordMetric("present", "error", user, start)
+		s.recordMetric("present", "error", start)
 		s.writeJSONError(w, statusErr.code, statusErr.message)
 		return
 	}
@@ -48,18 +42,20 @@ func (s *Server) handlePresent(w http.ResponseWriter, r *http.Request) {
 
 	recordID, err := s.dnsProvider.Present(ctx, res.FQDN, res.Value)
 	if err != nil {
-		s.recordMetric("present", "error", user, start)
+		s.recordMetric("present", "error", start)
+		// Internal log with full diagnostic details
 		slog.Error("dns provider failed to present challenge",
 			"user", user,
 			"fqdn", res.FQDN,
 			"error", err,
 		)
-		s.writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("failed to present challenge: %v", err))
+		// Mask internal details from client response (VULN-07)
+		s.writeJSONError(w, http.StatusBadGateway, "upstream DNS provider error")
 		return
 	}
 
 	s.tracker.Store(res.FQDN, res.Value, recordID)
-	s.recordMetric("present", "success", user, start)
+	s.recordMetric("present", "success", start)
 
 	slog.Info("successfully presented ACME DNS challenge",
 		"user", user,
@@ -81,9 +77,9 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	user := GetAuthUser(r)
 
-	res, statusErr := s.parseCleanupRequest(r)
+	res, statusErr := s.parseCleanupRequest(w, r)
 	if statusErr != nil {
-		s.recordMetric("cleanup", "error", user, start)
+		s.recordMetric("cleanup", "error", start)
 		s.writeJSONError(w, statusErr.code, statusErr.message)
 		return
 	}
@@ -95,18 +91,20 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 
 	err := s.dnsProvider.Cleanup(ctx, res.FQDN, recordID, res.Value)
 	if err != nil {
-		s.recordMetric("cleanup", "error", user, start)
+		s.recordMetric("cleanup", "error", start)
+		// Internal log with full diagnostic details
 		slog.Error("dns provider failed to clean up challenge",
 			"user", user,
 			"fqdn", res.FQDN,
 			"record_id", recordID,
 			"error", err,
 		)
-		s.writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("failed to cleanup challenge: %v", err))
+		// Mask internal details from client response (VULN-07)
+		s.writeJSONError(w, http.StatusBadGateway, "upstream DNS provider error")
 		return
 	}
 
-	s.recordMetric("cleanup", "success", user, start)
+	s.recordMetric("cleanup", "success", start)
 
 	slog.Info("successfully cleaned up ACME DNS challenge",
 		"user", user,
@@ -129,9 +127,17 @@ type httpError struct {
 	message string
 }
 
-func (s *Server) parsePresentRequest(r *http.Request) (*challenge.ValidationResult, *httpError) {
-	body, err := io.ReadAll(challenge.LimitReader(r.Body))
+func (s *Server) parsePresentRequest(w http.ResponseWriter, r *http.Request) (*challenge.ValidationResult, *httpError) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return nil, &httpError{
+				code:    http.StatusRequestEntityTooLarge,
+				message: fmt.Sprintf("request body too large (maximum %d bytes)", MaxRequestBodyBytes),
+			}
+		}
 		return nil, &httpError{code: http.StatusBadRequest, message: "failed to read request body"}
 	}
 
@@ -140,10 +146,14 @@ func (s *Server) parsePresentRequest(r *http.Request) (*challenge.ValidationResu
 		return nil, &httpError{code: http.StatusBadRequest, message: fmt.Sprintf("malformed json: %v", err)}
 	}
 
-	res, err := challenge.ResolveAndValidate(req.FQDN, req.Value, req.Domain, req.Token, req.KeyAuth, s.allowedDomain)
+	authCtx := GetAuthContext(r)
+	res, err := challenge.ResolveAndValidateForUser(
+		req.FQDN, req.Value, req.Domain, req.Token, req.KeyAuth,
+		s.allowedDomain, authCtx.Username, authCtx.AllowedSubdomains,
+	)
 	if err != nil {
 		code := http.StatusBadRequest
-		if strings.Contains(err.Error(), "not authorized") {
+		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "rbac authorization failed") {
 			code = http.StatusForbidden
 		}
 		return nil, &httpError{code: code, message: err.Error()}
@@ -152,9 +162,17 @@ func (s *Server) parsePresentRequest(r *http.Request) (*challenge.ValidationResu
 	return res, nil
 }
 
-func (s *Server) parseCleanupRequest(r *http.Request) (*challenge.ValidationResult, *httpError) {
-	body, err := io.ReadAll(challenge.LimitReader(r.Body))
+func (s *Server) parseCleanupRequest(w http.ResponseWriter, r *http.Request) (*challenge.ValidationResult, *httpError) {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return nil, &httpError{
+				code:    http.StatusRequestEntityTooLarge,
+				message: fmt.Sprintf("request body too large (maximum %d bytes)", MaxRequestBodyBytes),
+			}
+		}
 		return nil, &httpError{code: http.StatusBadRequest, message: "failed to read request body"}
 	}
 
@@ -163,10 +181,14 @@ func (s *Server) parseCleanupRequest(r *http.Request) (*challenge.ValidationResu
 		return nil, &httpError{code: http.StatusBadRequest, message: fmt.Sprintf("malformed json: %v", err)}
 	}
 
-	res, err := challenge.ResolveAndValidate(req.FQDN, req.Value, req.Domain, req.Token, req.KeyAuth, s.allowedDomain)
+	authCtx := GetAuthContext(r)
+	res, err := challenge.ResolveAndValidateForUser(
+		req.FQDN, req.Value, req.Domain, req.Token, req.KeyAuth,
+		s.allowedDomain, authCtx.Username, authCtx.AllowedSubdomains,
+	)
 	if err != nil {
 		code := http.StatusBadRequest
-		if strings.Contains(err.Error(), "not authorized") {
+		if strings.Contains(err.Error(), "not authorized") || strings.Contains(err.Error(), "rbac authorization failed") {
 			code = http.StatusForbidden
 		}
 		return nil, &httpError{code: code, message: err.Error()}
@@ -175,9 +197,9 @@ func (s *Server) parseCleanupRequest(r *http.Request) (*challenge.ValidationResu
 	return res, nil
 }
 
-func (s *Server) recordMetric(handler, status, client string, start time.Time) {
+func (s *Server) recordMetric(handler, status string, start time.Time) {
 	if s.metrics != nil {
-		s.metrics.ChallengesTotal.WithLabelValues(status, client).Inc()
+		s.metrics.ChallengesTotal.WithLabelValues(status).Inc()
 		s.metrics.RequestDuration.WithLabelValues(handler, status).Observe(time.Since(start).Seconds())
 	}
 }

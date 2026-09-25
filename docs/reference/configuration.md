@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All settings for `acme-dns-httpreq-proxy` are configured through environment variables. The application adheres to fail-fast principles: missing required variables or malformed parameters cause the process to exit immediately with code 1 during startup.
+All settings for `acme-dns-httpreq-proxy` are configured through environment variables or file-based secret mounts. The application adheres to fail-fast principles: missing required variables or malformed parameters cause the process to exit immediately with code 1 during startup.
 
 ---
 
@@ -8,78 +8,78 @@ All settings for `acme-dns-httpreq-proxy` are configured through environment var
 
 | Variable | Type | Required | Default | Description |
 | :--- | :--- | :---: | :---: | :--- |
-| `CLOUDFLARE_API_TOKEN` | String (Secret) | **Yes** | — | Scoped Cloudflare API token with `Zone.DNS:Edit` permissions. |
+| `CLOUDFLARE_API_TOKEN` | String (Secret) | **Conditional\*** | — | Scoped Cloudflare API token with `Zone.DNS:Edit` permissions. |
+| `CLOUDFLARE_API_TOKEN_FILE` | String (Path) | **Conditional\*** | — | Path to file containing Cloudflare API token (ANSSI BP-028 secret mounting). |
 | `ALLOWED_DOMAIN` | String | **Yes** | — | Apex domain allowed for ACME challenges (e.g. `example.com`). |
-| `USERS` | String | **Conditional\*** | — | Authorized client credentials for Basic Authentication. |
-| `USER_<NAME>_PASS` | String (Secret) | **Conditional\*** | — | Password for a specific user `<NAME>` (e.g. `USER_TRAEFIK_DMZ_PASS`). |
-| `PORT` | Integer | No | `8080` | Port to listen on (1–65535). |
-| `BIND_ADDR` | String | No | `0.0.0.0` | Host interface or IP address to bind to (e.g. `127.0.0.1` or `10.53.20.15`). |
+| `USERS` | String | **Conditional\*\*** | — | Authorized client credentials and RBAC rules (JSON or comma-delimited). |
+| `USER_<NAME>_PASS` | String (Secret) | **Conditional\*\*** | — | Password for a specific user `<NAME>` (e.g. `USER_TRAEFIK_DMZ_PASS`). |
+| `USER_<NAME>_SUBDOMAINS` | String | No | `*` | Comma-separated allowed subdomains for `<NAME>` (e.g. `*.dmz.firpic.fr,dmz.firpic.fr`). |
+| `PORT` | Integer | No | `8080` | Port for the public ACME challenge API (`/present`, `/cleanup`). |
+| `BIND_ADDR` | String | No | `0.0.0.0` | Host interface or IP address to bind the challenge listener to. |
+| `ADMIN_PORT` | Integer | No | `9090` | Dedicated internal port for operational endpoints (`/healthz`, `/metrics`). |
+| `ADMIN_BIND_ADDR` | String | No | `127.0.0.1` | Bind address for the admin server (defaults to localhost). |
+| `RATE_LIMIT_PER_MINUTE` | Integer | No | `60` | Maximum allowed challenge requests per minute per client IP / user. |
 | `CLOUDFLARE_ZONE_ID` | String | No | *(Auto)* | Pre-configured Cloudflare Zone ID (skips API zone lookup). |
 | `LOG_LEVEL` | String | No | `info` | Minimum log verbosity level: `debug`, `info`, `warn`, `error`. |
 
-*\* At least one valid user must be configured, either through `USERS` or through one or more `USER_<NAME>_PASS` variables.*
+*\* Either `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_API_TOKEN_FILE` must be provided.*  
+*\*\* At least one valid user must be configured, either through `USERS` or through `USER_<NAME>_PASS`.*
+
+---
+
+## RBAC and Authorized Users (`USERS`)
+
+User authentication credentials and their permitted subdomain boundaries can be supplied in three interchangeable formats:
+
+### 1. Structured JSON (Recommended for RBAC)
+Allows binding specific reverse proxies to restricted subdomain patterns:
+```json
+{
+  "traefik_dmz": {
+    "password": "StrongPassword123",
+    "allowed_subdomains": ["*.dmz.firpic.fr", "dmz.firpic.fr"]
+  },
+  "traefik_infra": {
+    "password": "AnotherStrongPassword456",
+    "allowed_subdomains": ["*.infra.firpic.fr", "infra.firpic.fr"]
+  },
+  "admin": {
+    "password": "AdminPassword789",
+    "allowed_subdomains": ["*"]
+  }
+}
+```
+
+### 2. Comma-Separated Pairs with Subdomains
+Format: `username:password:subdomain1;subdomain2,...`
+```bash
+USERS="traefik_dmz:SecretPass1:*.dmz.firpic.fr;dmz.firpic.fr,traefik_infra:SecretPass2:*"
+```
+
+### 3. Individual Environment Variables
+Ideal for Docker Secrets, Kubernetes, or HashiCorp Vault Agent templates:
+```bash
+USER_TRAEFIK_DMZ_PASS="SecretPass1"
+USER_TRAEFIK_DMZ_SUBDOMAINS="*.dmz.firpic.fr,dmz.firpic.fr"
+
+USER_TRAEFIK_INFRA_PASSWORD="SecretPass2"
+USER_TRAEFIK_INFRA_SUBDOMAINS="*"
+```
 
 ---
 
 ## Detailed Variable Specifications
 
-### `CLOUDFLARE_API_TOKEN`
-- **Description:** A custom API token generated in the Cloudflare dashboard.
-- **Required permissions:** `Zone` -> `DNS` -> `Edit`.
-- **Validation:** Must be a non-empty string.
-- **Security:** Treat as a critical secret. Never commit to source control.
+### `CLOUDFLARE_API_TOKEN_FILE`
+- **Description:** Path to a file on disk (typically mounted in tmpfs at `/run/secrets/cf_token`) holding the token.
+- **Security:** In accordance with ANSSI BP-028 recommendations, file-based secrets prevent accidental token leakage via process environment inspection (`/proc/$PID/environ`).
 
-### `ALLOWED_DOMAIN`
-- **Description:** The root domain zone that this proxy instance is authorized to modify.
-- **Format:** Fully qualified apex domain name without protocol or paths (e.g. `example.com` or `firpic.fr`). Trailing dot is automatically stripped.
-- **Validation:** Must not contain spaces, wildcards, path traversal characters (`/`, `\`, `..`), or URL characters. All incoming challenge requests must target `_acme-challenge.<ALLOWED_DOMAIN>` or `_acme-challenge.<subdomain>.<ALLOWED_DOMAIN>`.
+### `ADMIN_PORT` & `ADMIN_BIND_ADDR`
+- **Description:** Binds a distinct HTTP listener exclusively serving `/healthz` and `/metrics`.
+- **Default:** `127.0.0.1:9090`.
+- **Security:** Separating the admin port prevents external or DMZ network clients from scraping Prometheus telemetry or probe endpoints.
 
-### `PORT`
-- **Description:** The TCP port on which the HTTP server listens.
-- **Range:** Must be an integer between `1` and `65535`.
-- **Default:** `8080`.
-
-### `BIND_ADDR`
-- **Description:** Network address for the HTTP listener socket.
-- **Default:** `0.0.0.0` (all network interfaces).
-- **Hardening Recommendation:** In hardened or multi-homed environments, bind specifically to an internal private IP (e.g. `10.53.20.15` or `127.0.0.1`).
-
-### `CLOUDFLARE_ZONE_ID`
-- **Description:** The hexadecimal 32-character Cloudflare Zone ID for `ALLOWED_DOMAIN`.
-- **Default:** Empty. When not provided, the proxy automatically queries `GET /zones?name=<ALLOWED_DOMAIN>` during startup or upon the first challenge and caches the result.
-- **Use case:** Supplying this variable avoids an extra Cloudflare API lookup and speeds up cold starts.
-
-### `LOG_LEVEL`
-- **Description:** Sets the severity threshold for structured JSON logging.
-- **Allowed values:**
-  - `debug`: Detailed logging including request headers and Cloudflare API calls.
-  - `info` *(default)*: Standard operational events (challenge creation, deletions, startup).
-  - `warn`: Authorization failures, invalid challenge attempts, fallback recoveries.
-  - `error`: Fatal DNS failures, Cloudflare API errors, unrecoverable states.
-
----
-
-## Specifying Authorized Users (`USERS`)
-
-User authentication credentials can be supplied in three interchangeable formats:
-
-### 1. Comma-Separated Pairs
-Ideal for simple container deployments:
-```bash
-USERS="traefik_dmz:SecretPass1,traefik_infra:SecretPass2"
-```
-
-### 2. JSON Map
-Ideal when passing secrets serialized as JSON:
-```bash
-USERS='{"traefik_dmz":"SecretPass1","traefik_infra":"SecretPass2"}'
-```
-
-### 3. Individual Prefix Environment Variables
-Ideal for Docker Secrets, Kubernetes ConfigMaps, or HashiCorp Vault integrations where individual secrets are mapped to separate environment keys:
-```bash
-USER_TRAEFIK_DMZ_PASS="SecretPass1"
-USER_TRAEFIK_INFRA_PASSWORD="SecretPass2"
-```
-
-*Note: Usernames are normalized to lowercase. Authentication uses constant-time string comparisons (`crypto/subtle.ConstantTimeCompare`) to prevent timing side-channel attacks.*
+### `RATE_LIMIT_PER_MINUTE`
+- **Description:** Token bucket rate limiter preventing upstream Cloudflare API quota exhaustion.
+- **Default:** `60` requests per minute.
+- **Action:** Requests exceeding the burst limit receive `429 Too Many Requests` with a `Retry-After: 1` header.

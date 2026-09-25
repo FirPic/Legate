@@ -1,10 +1,12 @@
 package http
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/tracker"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -17,24 +19,29 @@ type Server struct {
 	tracker       *tracker.Tracker
 	auth          *Authenticator
 	metrics       *Metrics
+	rateLimiter   *RateLimiter
 	mux           *http.ServeMux
 	handler       http.Handler
 }
 
-// NewServer builds and configures a new Server instance.
+// NewServer builds and configures a new Server instance for challenge operations.
 func NewServer(
 	allowedDomain string,
-	users map[string]string,
+	users map[string]config.UserConfig,
 	dnsProvider provider.DNSProvider,
 	tr *tracker.Tracker,
 	m *Metrics,
+	rateLimitPerMinute int,
 ) *Server {
+	rl := NewRateLimiter(rateLimitPerMinute)
+
 	s := &Server{
 		allowedDomain: allowedDomain,
 		dnsProvider:   dnsProvider,
 		tracker:       tr,
 		auth:          NewAuthenticator(users),
 		metrics:       m,
+		rateLimiter:   rl,
 		mux:           http.NewServeMux(),
 	}
 
@@ -44,22 +51,43 @@ func NewServer(
 }
 
 func (s *Server) routes() {
-	// Public liveness / health probe
-	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	// Protected Lego httpreq challenge endpoints with Basic Auth and Rate Limiting
+	presentChain := s.rateLimiter.Middleware(s.auth.Middleware(http.HandlerFunc(s.handlePresent)))
+	cleanupChain := s.rateLimiter.Middleware(s.auth.Middleware(http.HandlerFunc(s.handleCleanup)))
 
-	// Prometheus metrics
-	if s.metrics != nil {
-		s.mux.Handle("GET /metrics", promhttp.HandlerFor(s.metrics.Registry(), promhttp.HandlerOpts{}))
-	}
-
-	// Protected Lego httpreq challenge endpoints
-	s.mux.Handle("POST /present", s.auth.Middleware(http.HandlerFunc(s.handlePresent)))
-	s.mux.Handle("POST /cleanup", s.auth.Middleware(http.HandlerFunc(s.handleCleanup)))
+	s.mux.Handle("POST /present", presentChain)
+	s.mux.Handle("POST /cleanup", cleanupChain)
 }
 
 // ServeHTTP delegates request handling to the configured middleware pipeline.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
+}
+
+// AdminHandler returns an http.Handler serving /healthz and /metrics on the dedicated admin port.
+func (s *Server) AdminHandler() http.Handler {
+	return NewAdminServer(s.allowedDomain, s.tracker, s.metrics)
+}
+
+// NewAdminServer creates an isolated http.Handler serving operational endpoints (/healthz and /metrics).
+func NewAdminServer(allowedDomain string, tr *tracker.Tracker, m *Metrics) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":          "ok",
+			"tracked_records": tr.Count(),
+			"allowed_domain":  allowedDomain,
+		})
+	})
+
+	if m != nil {
+		mux.Handle("GET /metrics", promhttp.HandlerFor(m.Registry(), promhttp.HandlerOpts{}))
+	}
+
+	return mux
 }
 
 // statusWriter wraps http.ResponseWriter to intercept HTTP response status codes.
@@ -84,18 +112,6 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		user, _, ok := r.BasicAuth()
 		if !ok || user == "" {
 			user = "anonymous"
-		}
-
-		// Omit verbose logs for repetitive /healthz or /metrics polling unless debug enabled
-		if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
-			slog.Debug("http request completed",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", sw.statusCode,
-				"duration_ms", duration.Milliseconds(),
-				"remote_addr", r.RemoteAddr,
-			)
-			return
 		}
 
 		logAttrs := []any{

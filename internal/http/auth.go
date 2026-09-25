@@ -2,83 +2,130 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
 )
 
 type contextKey string
 
 const (
-	authUserKey contextKey = "auth_user"
-	dummySecret            = "invalid-dummy-password-for-constant-time-comparison-protection"
+	authContextKey contextKey = "auth_context"
+	dummySecret               = "invalid-dummy-password-for-constant-time-comparison-protection"
 )
 
-// Authenticator handles HTTP Basic Authentication using constant-time comparisons.
-type Authenticator struct {
-	users map[string]string
+// AuthContext holds the verified identity and RBAC boundaries of an authenticated request.
+type AuthContext struct {
+	Username          string
+	AllowedSubdomains []string
 }
 
-// NewAuthenticator creates an Authenticator with a normalized map of username to password.
-func NewAuthenticator(users map[string]string) *Authenticator {
-	copyUsers := make(map[string]string, len(users))
-	for u, p := range users {
-		copyUsers[strings.ToLower(strings.TrimSpace(u))] = p
+// Authenticator handles HTTP Basic Authentication using constant-time hashed comparisons.
+type Authenticator struct {
+	users map[string]config.UserConfig
+}
+
+// NewAuthenticator creates an Authenticator with a normalized map of user configurations.
+func NewAuthenticator(users map[string]config.UserConfig) *Authenticator {
+	copyUsers := make(map[string]config.UserConfig, len(users))
+	for u, cfg := range users {
+		copyUsers[strings.ToLower(strings.TrimSpace(u))] = cfg
 	}
 	return &Authenticator{users: copyUsers}
 }
 
-// Verify checks the provided username and password using constant-time comparison.
-// It executes a dummy comparison if the user is missing to mitigate timing attack user enumeration.
-func (a *Authenticator) Verify(username, password string) bool {
+// Verify checks the provided username and password using SHA-256 constant-time comparison.
+// Hashing both secrets to fixed 32-byte arrays eliminates password length leakage.
+func (a *Authenticator) Verify(username, password string) (*config.UserConfig, bool) {
 	u := strings.ToLower(strings.TrimSpace(username))
-	expectedPassword, userFound := a.users[u]
+	expectedCfg, userFound := a.users[u]
 
-	var passMatch int
+	hProvided := sha256.Sum256([]byte(password))
+	var hExpected [32]byte
+
 	if userFound {
-		passMatch = subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword))
+		hExpected = sha256.Sum256([]byte(expectedCfg.Password))
 	} else {
-		_ = subtle.ConstantTimeCompare([]byte(password), []byte(dummySecret))
-		passMatch = 0
+		// Prevent user enumeration by evaluating against a dummy password hash
+		hExpected = sha256.Sum256([]byte(dummySecret))
 	}
 
-	return userFound && passMatch == 1
+	passMatch := subtle.ConstantTimeCompare(hProvided[:], hExpected[:])
+
+	if userFound && passMatch == 1 {
+		return &expectedCfg, true
+	}
+	return nil, false
 }
 
-// Middleware returns an HTTP middleware enforcing Basic Auth.
+// Middleware returns an HTTP middleware enforcing Basic Auth and injecting AuthContext.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()
-		if !ok || !a.Verify(username, password) {
-			slog.Warn("unauthorized request attempt",
-				"remote_addr", r.RemoteAddr,
-				"path", r.URL.Path,
-				"user_provided", username,
-			)
-
-			w.Header().Set("WWW-Authenticate", `Basic realm="acme-dns-httpreq-proxy", charset="UTF-8"`)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status": "error",
-				"error":  "unauthorized: valid basic authentication credentials required",
-			})
+		if !ok {
+			a.writeUnauthorized(w, r, "missing authorization header")
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), authUserKey, strings.ToLower(strings.TrimSpace(username)))
+		userCfg, valid := a.Verify(username, password)
+		if !valid {
+			a.writeUnauthorized(w, r, "invalid credentials")
+			return
+		}
+
+		normUser := strings.ToLower(strings.TrimSpace(username))
+		authCtx := &AuthContext{
+			Username:          normUser,
+			AllowedSubdomains: userCfg.AllowedSubdomains,
+		}
+
+		ctx := context.WithValue(r.Context(), authContextKey, authCtx)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// GetAuthUser retrieves the authenticated username from the request context, if present.
-func GetAuthUser(r *http.Request) string {
-	if val := r.Context().Value(authUserKey); val != nil {
-		if user, ok := val.(string); ok {
-			return user
+func (a *Authenticator) writeUnauthorized(w http.ResponseWriter, r *http.Request, reason string) {
+	username, _, _ := r.BasicAuth()
+	slog.Warn("unauthorized request attempt",
+		"remote_addr", r.RemoteAddr,
+		"path", r.URL.Path,
+		"user_provided", username,
+		"reason", reason,
+	)
+
+	w.Header().Set("WWW-Authenticate", `Basic realm="acme-dns-httpreq-proxy", charset="UTF-8"`)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "error",
+		"error":  "unauthorized: valid basic authentication credentials required",
+	})
+}
+
+// GetAuthContext retrieves the AuthContext from the request context, if present.
+func GetAuthContext(r *http.Request) *AuthContext {
+	if val := r.Context().Value(authContextKey); val != nil {
+		if authCtx, ok := val.(*AuthContext); ok {
+			return authCtx
 		}
 	}
-	return "anonymous"
+	return &AuthContext{
+		Username:          "anonymous",
+		AllowedSubdomains: nil,
+	}
+}
+
+// GetAuthUser retrieves the authenticated username from the request context.
+func GetAuthUser(r *http.Request) string {
+	return GetAuthContext(r).Username
+}
+
+// GetAuthSubdomains retrieves the allowed subdomains from the request context.
+func GetAuthSubdomains(r *http.Request) []string {
+	return GetAuthContext(r).AllowedSubdomains
 }

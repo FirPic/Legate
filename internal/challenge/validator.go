@@ -94,6 +94,46 @@ func ValidateFQDN(fqdn, allowedDomain string) (string, error) {
 	return normalizedFQDN, nil
 }
 
+// ValidateForUser verifies that the requested FQDN falls strictly within the subdomain patterns assigned to the user.
+// Supported pattern formats:
+//   - "*" : permits any domain under the zone
+//   - "dmz.firpic.fr" : exact match for dmz.firpic.fr
+//   - "*.dmz.firpic.fr" : wildcard match for any direct or nested child (e.g. app.dmz.firpic.fr)
+func ValidateForUser(user string, reqFQDN string, allowedSubdomains []string) error {
+	if len(allowedSubdomains) == 0 {
+		return fmt.Errorf("user %q has no authorized subdomains configured", user)
+	}
+
+	normFQDN := strings.ToLower(strings.TrimSpace(reqFQDN))
+	normFQDN = strings.TrimSuffix(normFQDN, ".")
+
+	if !strings.HasPrefix(normFQDN, ACMEPrefix) {
+		return fmt.Errorf("fqdn %q must start with prefix %q", reqFQDN, ACMEPrefix)
+	}
+
+	domainPart := strings.TrimPrefix(normFQDN, ACMEPrefix)
+
+	for _, pattern := range allowedSubdomains {
+		p := strings.ToLower(strings.TrimSpace(pattern))
+		p = strings.TrimSuffix(p, ".")
+
+		if p == "*" {
+			return nil
+		}
+
+		if strings.HasPrefix(p, "*.") {
+			base := strings.TrimPrefix(p, "*.")
+			if strings.HasSuffix(domainPart, "."+base) {
+				return nil
+			}
+		} else if domainPart == p {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("user %q is not authorized for domain %q (allowed patterns: %v)", user, domainPart, allowedSubdomains)
+}
+
 // ValidateChallengeValue validates that the ACME TXT value is non-empty and contains safe characters.
 func ValidateChallengeValue(value string) error {
 	v := strings.TrimSpace(value)

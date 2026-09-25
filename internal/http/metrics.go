@@ -14,7 +14,7 @@ type Metrics struct {
 }
 
 // NewMetrics initializes and registers proxy metrics.
-// If reg is nil, a dedicated registry is created.
+// Note: In accordance with security audit VULN-02, client identifiers are omitted to prevent user enumeration.
 func NewMetrics(reg *prometheus.Registry, activeRecordsFunc func() float64) *Metrics {
 	if reg == nil {
 		reg = prometheus.NewRegistry()
@@ -25,9 +25,9 @@ func NewMetrics(reg *prometheus.Registry, activeRecordsFunc func() float64) *Met
 		ChallengesTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "acme_dns_challenges_total",
-				Help: "Total number of ACME DNS challenges processed, partitioned by status and client.",
+				Help: "Total number of ACME DNS challenges processed, partitioned by status.",
 			},
-			[]string{"status", "client"},
+			[]string{"status"},
 		),
 		CloudflareRequestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{

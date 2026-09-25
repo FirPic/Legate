@@ -52,18 +52,25 @@ func main() {
 		"commit", Commit,
 		"bind_addr", cfg.BindAddr,
 		"port", cfg.Port,
+		"admin_port", cfg.AdminPort,
+		"rate_limit_per_min", cfg.RateLimitPerMinute,
 		"allowed_domain", cfg.AllowedDomain,
 		"users_count", len(cfg.Users),
 		"log_level", cfg.LogLevel,
 	)
 
-	// 3. Initialize record tracker and metrics
+	// 3. Initialize record tracker with background TTL eviction (VULN-05)
 	tr := tracker.New()
+	gcStopCh := make(chan struct{})
+	defer close(gcStopCh)
+	tr.StartGC(5*time.Minute, 15*time.Minute, gcStopCh)
+
+	// 4. Initialize Prometheus metrics
 	metrics := httpinternal.NewMetrics(nil, func() float64 {
 		return float64(tr.Count())
 	})
 
-	// 4. Initialize Cloudflare DNS provider client
+	// 5. Initialize Cloudflare DNS provider client
 	dnsClient := cloudflare.NewClient(cfg.CloudflareAPIToken, cfg.AllowedDomain)
 	dnsClient.SetObserver(metrics)
 
@@ -72,8 +79,8 @@ func main() {
 		slog.Info("pre-configured cloudflare zone id registered", "zone_id", cfg.CloudflareZoneID)
 	}
 
-	// 5. Build HTTP server
-	appServer := httpinternal.NewServer(cfg.AllowedDomain, cfg.Users, dnsClient, tr, metrics)
+	// 6. Build HTTP challenge server
+	appServer := httpinternal.NewServer(cfg.AllowedDomain, cfg.Users, dnsClient, tr, metrics, cfg.RateLimitPerMinute)
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr(),
@@ -85,16 +92,38 @@ func main() {
 		MaxHeaderBytes:    1 << 20, // 1 MiB
 	}
 
-	// 6. Start HTTP listener in background goroutine
-	serverErrCh := make(chan error, 1)
+	serverErrCh := make(chan error, 2)
+
+	// Start main challenge HTTP server
 	go func() {
-		slog.Info("listening for incoming requests", "address", cfg.ListenAddr())
+		slog.Info("listening for challenge requests", "address", cfg.ListenAddr())
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErrCh <- err
+			serverErrCh <- fmt.Errorf("main server listener: %w", err)
 		}
 	}()
 
-	// 7. Graceful shutdown on SIGINT / SIGTERM
+	// 7. Build and start separate admin HTTP server for /healthz and /metrics (VULN-02)
+	var adminServer *http.Server
+	if cfg.AdminPort != "" {
+		adminServer = &http.Server{
+			Addr:              cfg.AdminListenAddr(),
+			Handler:           appServer.AdminHandler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       30 * time.Second,
+			MaxHeaderBytes:    1 << 20,
+		}
+
+		go func() {
+			slog.Info("listening for admin metrics/healthz requests", "address", cfg.AdminListenAddr())
+			if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrCh <- fmt.Errorf("admin server listener: %w", err)
+			}
+		}()
+	}
+
+	// 8. Graceful shutdown on SIGINT / SIGTERM
 	shutdownSigCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownSigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -110,8 +139,15 @@ func main() {
 	defer shutdownCancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("graceful shutdown failed, forcing server closure", "error", err)
+		slog.Error("graceful shutdown failed for main server", "error", err)
 		_ = httpServer.Close()
+	}
+
+	if adminServer != nil {
+		if err := adminServer.Shutdown(shutdownCtx); err != nil {
+			slog.Error("graceful shutdown failed for admin server", "error", err)
+			_ = adminServer.Close()
+		}
 	}
 
 	slog.Info("server shutdown completed cleanly")
@@ -134,7 +170,6 @@ func initLogger(levelStr string) {
 		Level: level,
 	}
 
-	// Cloud-native JSON logging output
 	handler := slog.NewJSONHandler(os.Stdout, opts)
 	logger := slog.New(handler)
 	slog.SetDefault(logger)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestTracker_BasicOperations(t *testing.T) {
@@ -53,6 +54,43 @@ func TestTracker_BasicOperations(t *testing.T) {
 	}
 }
 
+func TestTracker_TTLExpiration(t *testing.T) {
+	tr := New()
+
+	fqdn := "_acme-challenge.expired.com"
+	val := "val-123"
+	tr.Store(fqdn, val, "rec-1")
+
+	// Artificially age the entry
+	tr.mu.Lock()
+	entry := tr.records[makeKey(fqdn, val)]
+	entry.createdAt = time.Now().Add(-20 * time.Minute)
+	tr.records[makeKey(fqdn, val)] = entry
+	tr.mu.Unlock()
+
+	// Store fresh entry
+	freshFQDN := "_acme-challenge.fresh.com"
+	freshVal := "val-456"
+	tr.Store(freshFQDN, freshVal, "rec-2")
+
+	if tr.Count() != 2 {
+		t.Fatalf("expected 2 records before purge, got %d", tr.Count())
+	}
+
+	// Purge with 15m TTL
+	evicted := tr.PurgeExpired(15 * time.Minute)
+	if evicted != 1 {
+		t.Errorf("expected 1 record evicted, got %d", evicted)
+	}
+
+	if _, found := tr.Get(fqdn, val); found {
+		t.Errorf("expected aged record to be evicted")
+	}
+	if _, found := tr.Get(freshFQDN, freshVal); !found {
+		t.Errorf("expected fresh record to still be present")
+	}
+}
+
 func TestTracker_ConcurrentAccess(t *testing.T) {
 	tr := New()
 	const workers = 50
@@ -83,11 +121,14 @@ func TestTracker_ConcurrentAccess(t *testing.T) {
 			}
 		}(i)
 
-		// Concurrently count
+		// Concurrently count & purge
 		go func(w int) {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
 				_ = tr.Count()
+				if j%10 == 0 {
+					_ = tr.PurgeExpired(1 * time.Hour)
+				}
 			}
 		}(i)
 	}

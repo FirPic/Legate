@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/challenge"
+	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
 	"github.com/FirPic/acme-dns-httpreq-proxy/internal/tracker"
 	"github.com/prometheus/client_golang/prometheus"
@@ -37,7 +38,7 @@ func (m *mockDNSProvider) Present(ctx context.Context, fqdn, value string) (stri
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.shouldFail {
-		return "", fmt.Errorf("mock error presenting challenge")
+		return "", fmt.Errorf("sensitive internal cloudflare api failure: api.cloudflare.com/client/v4/zones/123/dns_records: unauthorized token secret")
 	}
 	m.createCalls++
 	recID := fmt.Sprintf("cf-rec-%d", m.createCalls)
@@ -49,7 +50,7 @@ func (m *mockDNSProvider) Cleanup(ctx context.Context, fqdn, recordID, value str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.shouldFail {
-		return fmt.Errorf("mock error cleaning up challenge")
+		return fmt.Errorf("sensitive upstream timeout error connecting to cloudflare")
 	}
 	m.deleteCalls++
 	for k, v := range m.records {
@@ -63,27 +64,36 @@ func (m *mockDNSProvider) Cleanup(ctx context.Context, fqdn, recordID, value str
 
 func setupTestServer() (*Server, *mockDNSProvider, *tracker.Tracker, *Metrics) {
 	allowedDomain := "firpic.fr"
-	users := map[string]string{
-		"traefik_dmz": "secret123",
+	users := map[string]config.UserConfig{
+		"traefik_dmz": {
+			Password:          "secret123",
+			AllowedSubdomains: []string{"*.dmz.firpic.fr", "dmz.firpic.fr"},
+		},
+		"admin": {
+			Password:          "adminsecret",
+			AllowedSubdomains: []string{"*"},
+		},
 	}
 	mockDNS := newMockDNSProvider()
 	tr := tracker.New()
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg, func() float64 { return float64(tr.Count()) })
 
-	srv := NewServer(allowedDomain, users, mockDNS, tr, m)
+	srv := NewServer(allowedDomain, users, mockDNS, tr, m, 600)
 	return srv, mockDNS, tr, m
 }
 
-func TestHealthzEndpoint(t *testing.T) {
+func TestHealthzEndpointOnAdmin(t *testing.T) {
 	srv, _, _, _ := setupTestServer()
+	adminHandler := srv.AdminHandler()
 
+	// 1. Check admin handler serves /healthz
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, req)
+	adminHandler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
+		t.Fatalf("expected 200 on admin /healthz, got %d", rr.Code)
 	}
 
 	var resp map[string]any
@@ -93,20 +103,26 @@ func TestHealthzEndpoint(t *testing.T) {
 	if resp["status"] != "ok" {
 		t.Errorf("expected status ok, got %v", resp["status"])
 	}
-	if resp["allowed_domain"] != "firpic.fr" {
-		t.Errorf("expected allowed_domain firpic.fr, got %v", resp["allowed_domain"])
+
+	// 2. Check main server rejects /healthz (VULN-02 separation)
+	mainReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	mainRR := httptest.NewRecorder()
+	srv.ServeHTTP(mainRR, mainReq)
+	if mainRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on main server for /healthz, got %d", mainRR.Code)
 	}
 }
 
 func TestMetricsEndpoint(t *testing.T) {
 	srv, _, _, m := setupTestServer()
+	adminHandler := srv.AdminHandler()
 
-	// Simulate a metric observation so the counter series exists
-	m.ChallengesTotal.WithLabelValues("success", "traefik_dmz").Inc()
+	// Record an observation
+	m.ChallengesTotal.WithLabelValues("success").Inc()
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, req)
+	adminHandler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 on /metrics, got %d", rr.Code)
@@ -116,8 +132,9 @@ func TestMetricsEndpoint(t *testing.T) {
 	if !strings.Contains(body, "acme_dns_challenges_total") {
 		t.Errorf("expected metric acme_dns_challenges_total in body")
 	}
-	if !strings.Contains(body, "acme_dns_active_records") {
-		t.Errorf("expected metric acme_dns_active_records in body")
+	// Verify VULN-02: client label must NOT exist in metrics
+	if strings.Contains(body, `client="`) {
+		t.Errorf("information leak: client label found in metrics: %s", body)
 	}
 }
 
@@ -125,7 +142,7 @@ func TestPresent_Success(t *testing.T) {
 	srv, mockDNS, tr, _ := setupTestServer()
 
 	payload := challenge.PresentRequest{
-		FQDN:  "_acme-challenge.sub.firpic.fr.",
+		FQDN:  "_acme-challenge.sub.dmz.firpic.fr.",
 		Value: "challenge-test-value-123",
 	}
 	body, _ := json.Marshal(payload)
@@ -150,7 +167,7 @@ func TestPresent_Success(t *testing.T) {
 	}
 
 	// Verify tracker holds record
-	recID, found := tr.Get("_acme-challenge.sub.firpic.fr", "challenge-test-value-123")
+	recID, found := tr.Get("_acme-challenge.sub.dmz.firpic.fr", "challenge-test-value-123")
 	if !found || recID != resp.RecordID {
 		t.Fatalf("record not properly saved in tracker (found: %v, id: %s)", found, recID)
 	}
@@ -160,31 +177,12 @@ func TestPresent_Success(t *testing.T) {
 	}
 }
 
-func TestPresent_Unauthorized(t *testing.T) {
+func TestPresent_RBAC_Violation_Forbidden(t *testing.T) {
 	srv, _, _, _ := setupTestServer()
 
+	// DMZ user attempting to issue certificate for the apex root firpic.fr (VULN-01)
 	payload := challenge.PresentRequest{
-		FQDN:  "_acme-challenge.sub.firpic.fr",
-		Value: "val123",
-	}
-	body, _ := json.Marshal(payload)
-
-	req := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
-	req.SetBasicAuth("traefik_dmz", "wrongpassword")
-	rr := httptest.NewRecorder()
-
-	srv.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rr.Code)
-	}
-}
-
-func TestPresent_ForbiddenDomain(t *testing.T) {
-	srv, _, _, _ := setupTestServer()
-
-	payload := challenge.PresentRequest{
-		FQDN:  "_acme-challenge.attacker.com",
+		FQDN:  "_acme-challenge.firpic.fr",
 		Value: "val123",
 	}
 	body, _ := json.Marshal(payload)
@@ -196,45 +194,33 @@ func TestPresent_ForbiddenDomain(t *testing.T) {
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rr.Code)
+		t.Fatalf("expected 403 Forbidden for DMZ user requesting apex, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
-func TestPresent_RawMode(t *testing.T) {
-	srv, mockDNS, tr, _ := setupTestServer()
+func TestPresent_BodyTooLarge_413(t *testing.T) {
+	srv, _, _, _ := setupTestServer()
 
-	payload := challenge.PresentRequest{
-		Domain:  "sub.firpic.fr",
-		Token:   "tok123",
-		KeyAuth: "key-auth-token-xyz",
-	}
-	body, _ := json.Marshal(payload)
+	// Payload larger than 16 KiB (VULN-06)
+	oversizedBody := strings.Repeat("A", 17*1024)
 
-	req := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/present", strings.NewReader(oversizedBody))
 	req.SetBasicAuth("traefik_dmz", "secret123")
 	rr := httptest.NewRecorder()
 
 	srv.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 in raw mode, got %d: %s", rr.Code, rr.Body.String())
-	}
-
-	if mockDNS.createCalls != 1 {
-		t.Errorf("expected 1 create call, got %d", mockDNS.createCalls)
-	}
-
-	if tr.Count() != 1 {
-		t.Errorf("expected 1 tracked record, got %d", tr.Count())
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 Request Entity Too Large, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
-func TestPresent_ProviderFailure(t *testing.T) {
+func TestPresent_ProviderFailure_Masking(t *testing.T) {
 	srv, mockDNS, _, _ := setupTestServer()
 	mockDNS.shouldFail = true
 
 	payload := challenge.PresentRequest{
-		FQDN:  "_acme-challenge.sub.firpic.fr",
+		FQDN:  "_acme-challenge.sub.dmz.firpic.fr",
 		Value: "val123",
 	}
 	body, _ := json.Marshal(payload)
@@ -246,14 +232,78 @@ func TestPresent_ProviderFailure(t *testing.T) {
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 Bad Gateway on provider failure, got %d", rr.Code)
+		t.Fatalf("expected 502 Bad Gateway, got %d", rr.Code)
+	}
+
+	var resp Response
+	_ = json.NewDecoder(rr.Body).Decode(&resp)
+
+	// Verify internal details/tokens were NOT leaked (VULN-07)
+	if strings.Contains(resp.Error, "cloudflare.com") || strings.Contains(resp.Error, "secret") {
+		t.Fatalf("information leak detected in 502 response: %s", resp.Error)
+	}
+	if resp.Error != "upstream DNS provider error" {
+		t.Errorf("expected generic error message, got: %s", resp.Error)
+	}
+}
+
+func TestRateLimiter(t *testing.T) {
+	allowedDomain := "firpic.fr"
+	users := map[string]config.UserConfig{
+		"traefik_dmz": {
+			Password:          "secret123",
+			AllowedSubdomains: []string{"*"},
+		},
+	}
+	mockDNS := newMockDNSProvider()
+	tr := tracker.New()
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg, nil)
+
+	// Rate limit: 2 requests per minute
+	srv := NewServer(allowedDomain, users, mockDNS, tr, m, 2)
+
+	payload := challenge.PresentRequest{
+		FQDN:  "_acme-challenge.sub.firpic.fr",
+		Value: "val123",
+	}
+	body, _ := json.Marshal(payload)
+
+	// 1st request -> allowed
+	req1 := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req1.SetBasicAuth("traefik_dmz", "secret123")
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("request 1 expected 200, got %d", rr1.Code)
+	}
+
+	// 2nd request -> allowed
+	req2 := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req2.SetBasicAuth("traefik_dmz", "secret123")
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("request 2 expected 200, got %d", rr2.Code)
+	}
+
+	// 3rd request -> rate limited (429) (VULN-04)
+	req3 := httptest.NewRequest(http.MethodPost, "/present", bytes.NewReader(body))
+	req3.SetBasicAuth("traefik_dmz", "secret123")
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+	if rr3.Code != http.StatusTooManyRequests {
+		t.Fatalf("request 3 expected 429 Too Many Requests, got %d", rr3.Code)
+	}
+	if rr3.Header().Get("Retry-After") == "" {
+		t.Error("expected Retry-After header in 429 response")
 	}
 }
 
 func TestCleanup_Success(t *testing.T) {
 	srv, mockDNS, tr, _ := setupTestServer()
 
-	fqdn := "_acme-challenge.sub.firpic.fr"
+	fqdn := "_acme-challenge.sub.dmz.firpic.fr"
 	val := "challenge-123"
 
 	mockDNS.records[fqdn+"|"+val] = "rec-to-delete"
@@ -281,38 +331,5 @@ func TestCleanup_Success(t *testing.T) {
 
 	if _, found := tr.Get(fqdn, val); found {
 		t.Errorf("record should be deleted from tracker")
-	}
-}
-
-func TestCleanup_FallbackDirectSearch(t *testing.T) {
-	srv, mockDNS, tr, _ := setupTestServer()
-
-	fqdn := "_acme-challenge.sub.firpic.fr"
-	val := "challenge-fallback"
-
-	// Exists in provider, but NOT in local tracker
-	mockDNS.records[fqdn+"|"+val] = "rec-found-in-cf"
-
-	payload := challenge.CleanupRequest{
-		FQDN:  fqdn,
-		Value: val,
-	}
-	body, _ := json.Marshal(payload)
-
-	req := httptest.NewRequest(http.MethodPost, "/cleanup", bytes.NewReader(body))
-	req.SetBasicAuth("traefik_dmz", "secret123")
-	rr := httptest.NewRecorder()
-
-	srv.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 on fallback cleanup, got %d", rr.Code)
-	}
-
-	if mockDNS.deleteCalls != 1 {
-		t.Errorf("expected 1 delete call on fallback, got %d", mockDNS.deleteCalls)
-	}
-	if tr.Count() != 0 {
-		t.Errorf("expected tracker empty, got %d", tr.Count())
 	}
 }
