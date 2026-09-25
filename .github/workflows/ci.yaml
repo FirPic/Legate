@@ -47,4 +47,4 @@ jobs:
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Verify build
-        run: CGO_ENABLED=0 go build -trimpath -o bin/acme-dns-proxy ./cmd/acme-dns-proxy
+        run: CGO_ENABLED=0 go build -trimpath -o bin/legate ./cmd/legate

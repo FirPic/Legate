@@ -5,9 +5,9 @@ before:
     - go mod tidy
 
 builds:
-  - id: acme-dns-proxy
-    main: ./cmd/acme-dns-proxy
-    binary: acme-dns-proxy
+  - id: legate
+    main: ./cmd/legate
+    binary: legate
     env:
       - CGO_ENABLED=0
     goos:

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
+	"github.com/FirPic/legate/internal/provider"
 )
 
 type mockObserver struct {

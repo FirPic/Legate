@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/challenge"
+	"github.com/FirPic/legate/internal/challenge"
 )
 
 // MaxRequestBodyBytes defines the strict upper limit for challenge payloads (16 KiB).

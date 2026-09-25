@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/ionos"
+	"github.com/FirPic/legate/internal/provider/ionos"
 )
 
 type mockObserver struct {

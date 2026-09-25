@@ -1,4 +1,4 @@
-module github.com/FirPic/acme-dns-httpreq-proxy
+module github.com/FirPic/legate
 
 go 1.25.0
 

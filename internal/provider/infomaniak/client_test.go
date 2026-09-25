@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/infomaniak"
+	"github.com/FirPic/legate/internal/provider/infomaniak"
 )
 
 type mockObserver struct {

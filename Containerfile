@@ -21,21 +21,21 @@ ARG DATE=unknown
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
     -trimpath \
     -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${DATE}" \
-    -o /bin/acme-dns-proxy ./cmd/acme-dns-proxy
+    -o /bin/legate ./cmd/legate
 
 # Stage 2: Distroless minimal runtime
 FROM gcr.io/distroless/static-debian12:nonroot
 
-LABEL org.opencontainers.image.title="acme-dns-httpreq-proxy" \
-      org.opencontainers.image.description="Secure, lightweight ACME DNS-01 HTTP proxy for Lego and Traefik" \
-      org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.source="https://github.com/FirPic/acme-dns-httpreq-proxy"
+LABEL org.opencontainers.image.title="legate" \
+      org.opencontainers.image.description="Lightweight ACME DNS-01 challenge gateway for Lego, Traefik and Caddy" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.source="https://github.com/FirPic/legate"
 
-COPY --from=builder /bin/acme-dns-proxy /usr/local/bin/acme-dns-proxy
+COPY --from=builder /bin/legate /usr/local/bin/legate
 
 # Run as nonroot user (UID 65532)
 USER nonroot:nonroot
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/acme-dns-proxy"]
+ENTRYPOINT ["/usr/local/bin/legate"]

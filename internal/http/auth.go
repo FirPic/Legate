@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
+	"github.com/FirPic/legate/internal/config"
 )
 
 type contextKey string

@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/cloudflare"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/infomaniak"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider/ionos"
+	"github.com/FirPic/legate/internal/provider"
+	"github.com/FirPic/legate/internal/provider/cloudflare"
+	"github.com/FirPic/legate/internal/provider/infomaniak"
+	"github.com/FirPic/legate/internal/provider/ionos"
 	"gopkg.in/yaml.v3"
 )
 

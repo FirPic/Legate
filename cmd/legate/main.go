@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
-	httpinternal "github.com/FirPic/acme-dns-httpreq-proxy/internal/http"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/tracker"
+	"github.com/FirPic/legate/internal/config"
+	httpinternal "github.com/FirPic/legate/internal/http"
+	"github.com/FirPic/legate/internal/tracker"
 )
 
 var (

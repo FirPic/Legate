@@ -1,5 +1,5 @@
-BINARY_NAME := acme-dns-proxy
-CMD_PATH := ./cmd/acme-dns-proxy
+BINARY_NAME := legate
+CMD_PATH := ./cmd/legate
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "1.0.0-dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')

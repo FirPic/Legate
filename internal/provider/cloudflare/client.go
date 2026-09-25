@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
+	"github.com/FirPic/legate/internal/provider"
 )
 
 // Ensure Client satisfies provider.DNSProvider.

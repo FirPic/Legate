@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/provider"
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/tracker"
+	"github.com/FirPic/legate/internal/config"
+	"github.com/FirPic/legate/internal/provider"
+	"github.com/FirPic/legate/internal/tracker"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 

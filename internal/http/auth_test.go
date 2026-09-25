@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/FirPic/acme-dns-httpreq-proxy/internal/config"
+	"github.com/FirPic/legate/internal/config"
 )
 
 func TestAuthenticator_Verify(t *testing.T) {
