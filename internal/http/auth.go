@@ -39,27 +39,36 @@ func NewAuthenticator(users map[string]config.UserConfig) *Authenticator {
 	return &Authenticator{users: copyUsers}
 }
 
-// Verify checks the provided username and password using SHA-256 constant-time comparison.
-// Hashing both secrets to fixed 32-byte arrays eliminates password length leakage.
+// Verify checks the provided username and password.
+// If the stored password is an Argon2id hash ($argon2id$), it performs constant-time Argon2id verification.
+// Otherwise, it falls back to SHA-256 constant-time comparison for legacy plaintext passwords.
+// To prevent timing-based user enumeration, non-existent users trigger an equivalent evaluation.
 func (a *Authenticator) Verify(username, password string) (*config.UserConfig, bool) {
 	u := strings.ToLower(strings.TrimSpace(username))
 	expectedCfg, userFound := a.users[u]
 
-	hProvided := sha256.Sum256([]byte(password))
-	var hExpected [32]byte
-
 	if userFound {
-		hExpected = sha256.Sum256([]byte(expectedCfg.Password))
-	} else {
-		// Prevent user enumeration by evaluating against a dummy password hash
-		hExpected = sha256.Sum256([]byte(dummySecret))
+		if IsArgon2idHash(expectedCfg.Password) {
+			valid, err := VerifyPassword(password, expectedCfg.Password)
+			if err == nil && valid {
+				return &expectedCfg, true
+			}
+			return nil, false
+		}
+
+		// Legacy fallback: SHA-256 constant-time comparison
+		hProvided := sha256.Sum256([]byte(password))
+		hExpected := sha256.Sum256([]byte(expectedCfg.Password))
+		if subtle.ConstantTimeCompare(hProvided[:], hExpected[:]) == 1 {
+			return &expectedCfg, true
+		}
+		return nil, false
 	}
 
-	passMatch := subtle.ConstantTimeCompare(hProvided[:], hExpected[:])
-
-	if userFound && passMatch == 1 {
-		return &expectedCfg, true
-	}
+	// Prevent user enumeration by evaluating against a dummy password hash
+	hProvided := sha256.Sum256([]byte(password))
+	hExpected := sha256.Sum256([]byte(dummySecret))
+	_ = subtle.ConstantTimeCompare(hProvided[:], hExpected[:])
 	return nil, false
 }
 

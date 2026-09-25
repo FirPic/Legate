@@ -20,6 +20,10 @@ func TestAuthenticator_Verify(t *testing.T) {
 			Password:          "strongpassword2",
 			AllowedSubdomains: []string{"*"},
 		},
+		"traefik_argon": {
+			Password:          "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b",
+			AllowedSubdomains: []string{"*.secure.fr"},
+		},
 	}
 	auth := NewAuthenticator(users)
 
@@ -60,6 +64,28 @@ func TestAuthenticator_Verify(t *testing.T) {
 	_, validEmpty := auth.Verify("", "")
 	if validEmpty {
 		t.Error("expected failure on empty credentials")
+	}
+
+	// Argon2id user verification
+	argonPass := "argonSecret#2026"
+	argonHash, err := HashPassword(argonPass)
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+	users["argon_user"] = config.UserConfig{
+		Password:          argonHash,
+		AllowedSubdomains: []string{"*.secure.fr"},
+	}
+	authWithArgon := NewAuthenticator(users)
+
+	_, validArgon := authWithArgon.Verify("argon_user", argonPass)
+	if !validArgon {
+		t.Error("expected valid verification for Argon2id hashed password")
+	}
+
+	_, invalidArgon := authWithArgon.Verify("argon_user", "wrongArgonPass")
+	if invalidArgon {
+		t.Error("expected failure on wrong password for Argon2id user")
 	}
 }
 
