@@ -91,6 +91,38 @@ func TestTracker_TTLExpiration(t *testing.T) {
 	}
 }
 
+func TestTracker_EvictionCallback(t *testing.T) {
+	tr := New()
+
+	fqdn := "_acme-challenge.callback.com"
+	val := "token-val"
+	recID := "rec-to-clean"
+	tr.Store(fqdn, val, recID)
+
+	// Artificially age the entry
+	tr.mu.Lock()
+	entry := tr.records[makeKey(fqdn, val)]
+	entry.createdAt = time.Now().Add(-30 * time.Minute)
+	tr.records[makeKey(fqdn, val)] = entry
+	tr.mu.Unlock()
+
+	var calledWith ExpiredRecord
+	callbackCount := 0
+
+	evicted := tr.PurgeExpired(15*time.Minute, func(rec ExpiredRecord) {
+		callbackCount++
+		calledWith = rec
+	})
+
+	if evicted != 1 || callbackCount != 1 {
+		t.Fatalf("expected 1 eviction and 1 callback, got evicted=%d, callbacks=%d", evicted, callbackCount)
+	}
+
+	if calledWith.FQDN != fqdn || calledWith.Value != val || calledWith.RecordID != recID {
+		t.Errorf("unexpected callback record: %+v", calledWith)
+	}
+}
+
 func TestTracker_ConcurrentAccess(t *testing.T) {
 	tr := New()
 	const workers = 50

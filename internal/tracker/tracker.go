@@ -7,9 +7,21 @@ import (
 )
 
 type recordEntry struct {
+	fqdn      string
+	value     string
 	recordID  string
 	createdAt time.Time
 }
+
+// ExpiredRecord represents challenge metadata of a record being purged from the tracker.
+type ExpiredRecord struct {
+	FQDN     string
+	Value    string
+	RecordID string
+}
+
+// EvictionCallback is invoked when an expired challenge record is evicted by the GC.
+type EvictionCallback func(record ExpiredRecord)
 
 // Tracker provides a thread-safe in-memory store mapping ACME challenge tuples (fqdn, value)
 // to provider record IDs with TTL tracking to prevent memory exhaustion and abandoned records.
@@ -34,7 +46,11 @@ func makeKey(fqdn, value string) string {
 func (t *Tracker) Store(fqdn, value, recordID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	normFQDN := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(fqdn), "."))
+	val := strings.TrimSpace(value)
 	t.records[makeKey(fqdn, value)] = recordEntry{
+		fqdn:      normFQDN,
+		value:     val,
 		recordID:  strings.TrimSpace(recordID),
 		createdAt: time.Now(),
 	}
@@ -67,34 +83,47 @@ func (t *Tracker) Count() int {
 	return len(t.records)
 }
 
-// PurgeExpired evicts records that have been in the tracker longer than maxAge.
+// PurgeExpired evicts records that have been in the tracker longer than maxAge,
+// invoking optional EvictionCallback callbacks for each evicted record.
 // Returns the number of evicted records.
-func (t *Tracker) PurgeExpired(maxAge time.Duration) int {
+func (t *Tracker) PurgeExpired(maxAge time.Duration, callbacks ...EvictionCallback) int {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	now := time.Now()
-	evicted := 0
+	var expired []ExpiredRecord
 
 	for k, entry := range t.records {
 		if now.Sub(entry.createdAt) > maxAge {
 			delete(t.records, k)
-			evicted++
+			expired = append(expired, ExpiredRecord{
+				FQDN:     entry.fqdn,
+				Value:    entry.value,
+				RecordID: entry.recordID,
+			})
+		}
+	}
+	t.mu.Unlock()
+
+	for _, rec := range expired {
+		for _, cb := range callbacks {
+			if cb != nil {
+				cb(rec)
+			}
 		}
 	}
 
-	return evicted
+	return len(expired)
 }
 
-// StartGC starts a background ticker that periodically purges records older than maxAge.
-func (t *Tracker) StartGC(interval, maxAge time.Duration, stopCh <-chan struct{}) {
+// StartGC starts a background ticker that periodically purges records older than maxAge,
+// executing optional EvictionCallback callbacks on eviction (e.g. upstream DNS cleanup).
+func (t *Tracker) StartGC(interval, maxAge time.Duration, stopCh <-chan struct{}, callbacks ...EvictionCallback) {
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				t.PurgeExpired(maxAge)
+				t.PurgeExpired(maxAge, callbacks...)
 			case <-stopCh:
 				return
 			}

@@ -61,11 +61,10 @@ func main() {
 		"log_level", cfg.LogLevel,
 	)
 
-	// 3. Initialize record tracker with background TTL eviction (VULN-05)
+	// 3. Initialize record tracker
 	tr := tracker.New()
 	gcStopCh := make(chan struct{})
 	defer close(gcStopCh)
-	tr.StartGC(5*time.Minute, 15*time.Minute, gcStopCh)
 
 	// 4. Initialize Prometheus metrics
 	metrics := httpinternal.NewMetrics(nil, func() float64 {
@@ -79,6 +78,36 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("registered dns provider domains", "domains", dnsRegistry.RegisteredDomains())
+
+	// Start background GC with automatic upstream DNS cleanup for abandoned challenges
+	tr.StartGC(5*time.Minute, 15*time.Minute, gcStopCh, func(rec tracker.ExpiredRecord) {
+		slog.Warn("cleaning up abandoned expired ACME challenge from upstream DNS provider",
+			"fqdn", rec.FQDN,
+			"record_id", rec.RecordID,
+		)
+		prov, _, err := dnsRegistry.Resolve(rec.FQDN)
+		if err != nil {
+			slog.Error("failed to resolve provider for expired challenge record",
+				"fqdn", rec.FQDN,
+				"error", err,
+			)
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := prov.Cleanup(cleanupCtx, rec.FQDN, rec.RecordID, rec.Value); err != nil {
+			slog.Error("failed to delete expired record from upstream DNS provider",
+				"fqdn", rec.FQDN,
+				"record_id", rec.RecordID,
+				"error", err,
+			)
+		} else {
+			slog.Info("successfully cleaned up abandoned challenge record from upstream DNS provider",
+				"fqdn", rec.FQDN,
+				"record_id", rec.RecordID,
+			)
+		}
+	})
 
 	// 6. Build HTTP challenge server
 	appServer := httpinternal.NewServer(dnsRegistry, cfg.Users, tr, metrics, cfg.RateLimitPerMinute)
