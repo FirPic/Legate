@@ -94,10 +94,9 @@ services:
       - "127.0.0.1:9090:9090" # Admin & metrics exposed only on host localhost
     volumes:
       - ./legate.yaml:/etc/legate/config.yaml:ro
+      - ./secrets/cf_token:/run/secrets/cf_token:ro
     environment:
       - CONFIG_FILE=/etc/legate/config.yaml
-      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-      - TRAEFIK_LEGATE_PASSWORD=${TRAEFIK_LEGATE_PASSWORD}
 
 networks:
   edge-network:
@@ -105,6 +104,10 @@ networks:
   security-zone:
     internal: true # No direct ingress from outside
 ```
+
+> [!NOTE]
+> Traefik transmits the plaintext password via `HTTPREQ_PASSWORD` in standard HTTP Basic Authentication over the isolated internal network.
+> Legate validates this against the Argon2id hash stored in `legate.yaml` (`password_hash`) or in a secret file (`password_hash_file`). Legate never stores the plaintext password.
 
 Launch the stack using Podman:
 

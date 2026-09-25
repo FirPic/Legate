@@ -37,7 +37,7 @@ server:
 providers:
   cf-main:
     type: cloudflare
-    api_token: "your-cloudflare-api-token"
+    api_token_file: "/etc/legate/secrets/cf_token"
 
 domains:
   example.com:
@@ -45,9 +45,15 @@ domains:
 
 users:
   traefik_dmz:
-    password: "StrongRandomPassword123"
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$ZHZ1bmtsZXZhbGlkc2FsdA$YnlF0zPsh8H3R3m5x/l5g8B4o2gC7f6Q9r8u1v2w3x4"
     allowed_subdomains: ["*.dmz.example.com", "dmz.example.com"]
 ```
+
+> [!TIP]
+> Generate the Argon2id hash for `password_hash` with:
+> ```bash
+> /usr/local/bin/legate hash-password "StrongRandomPassword123"
+> ```
 
 ```bash
 sudo chmod 600 /etc/legate/config.yaml

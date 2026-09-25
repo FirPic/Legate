@@ -24,20 +24,22 @@ server:
   tls_key_file: ""           # optional: path to TLS private key file
 
 providers:
+  # Option A: Direct API token or environment variable interpolation
   cf-primary:
     type: cloudflare
     api_token: "${CLOUDFLARE_API_TOKEN}"
     zone_id: "${CLOUDFLARE_ZONE_ID}" # optional: skips zone lookup call
     base_url: ""                     # optional: custom API endpoint (defaults to https://api.cloudflare.com/client/v4)
 
+  # Option B: Secret file mounted from host (ANSSI BP-028 secret mounting)
   ionos-corp:
     type: ionos
-    api_key: "${IONOS_API_KEY}"      # format: <public_prefix>.<secret>
+    api_key_file: "/run/secrets/ionos_key"
     base_url: ""                     # optional: defaults to https://api.hosting.ionos.com/dns/v1
 
   infomaniak-eu:
     type: infomaniak
-    api_token: "${INFOMANIAK_API_TOKEN}"
+    api_token_file: "/run/secrets/infomaniak_token"
     base_url: ""                     # optional: defaults to https://api.infomaniak.com/1
 
 domains:
@@ -49,17 +51,21 @@ domains:
     provider: infomaniak-eu
 
 users:
+  # Option A: Direct Argon2id hash
   traefik_dmz:
-    password: "${TRAEFIK_PASSWORD}"
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$ZHZ1bmtsZXZhbGlkc2FsdA$YnlF0zPsh8H3R3m5x/l5g8B4o2gC7f6Q9r8u1v2w3x4"
     allowed_subdomains:
       - "*.example.com"
       - "*.company.fr"
+
+  # Option B: Path to mounted secret file containing the Argon2id hash
   caddy_internal:
-    password: "${CADDY_PASSWORD}"
+    password_hash_file: "/run/secrets/caddy_hash"
     allowed_subdomains:
       - "*.infra.ch"
+
   admin_full:
-    password: "${ADMIN_PASSWORD}"
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b"
     allowed_subdomains:
       - "*"
 ```
@@ -88,10 +94,15 @@ Each entry defines a unique provider instance referenced by key in `domains`:
 | Key | Type | Applicable Providers | Description |
 | :--- | :--- | :--- | :--- |
 | `type` | string | All | Provider type: `cloudflare`, `ionos`, or `infomaniak`. |
-| `api_token` | string | `cloudflare`, `infomaniak` | API Bearer token with DNS zone edit permissions. |
-| `api_key` | string | `ionos` | IONOS DNS API Key in `<prefix>.<secret>` format. |
+| `api_token` | string | `cloudflare`, `infomaniak` | API Bearer token value. Mutually exclusive with `api_token_file`. |
+| `api_token_file` | string | `cloudflare`, `infomaniak` | File path containing API Bearer token. Mutually exclusive with `api_token`. |
+| `api_key` | string | `ionos` | IONOS DNS API Key (`<prefix>.<secret>`). Mutually exclusive with `api_key_file`. |
+| `api_key_file` | string | `ionos` | File path containing IONOS DNS API Key. Mutually exclusive with `api_key`. |
 | `zone_id` | string | `cloudflare`, `infomaniak` | Optional pre-cached Zone ID (skips dynamic zone lookup). |
-| `base_url` | string | All | Optional override of the provider REST API endpoint. |
+| `base_url` | string | All | Optional override of the provider REST API endpoint (must use HTTPS). |
+
+> [!NOTE]
+> Specifying both a direct value and a `_file` path for the same provider is strictly rejected to prevent ambiguity.
 
 ### `domains`
 
@@ -112,8 +123,32 @@ Each user entry defines credentials and subdomain authorization rules:
 
 | Key | Type | Description |
 | :--- | :--- | :--- |
-| `password` | string | Basic Auth password (supports plaintext or environment interpolation `${VAR}`). |
+| `password_hash` | string | RFC 9106 Argon2id hash (`$argon2id$...`). Mutually exclusive with `password_hash_file`. |
+| `password_hash_file` | string | File path containing the raw Argon2id hash. Mutually exclusive with `password_hash`. |
 | `allowed_subdomains` | list of strings | List of authorized subdomain glob patterns (e.g. `["*.dmz.example.com", "example.com"]` or `["*"]`). |
+
+> [!CAUTION]
+> Plaintext passwords in configuration and environment variables are strictly forbidden and rejected at startup.
+
+#### Generating Argon2id Hashes
+
+Legate embeds a native hash generator calibrated to RFC 9106 recommended production parameters ($m=65536 \text{ KiB}, t=3, p=2, \text{salt}=16\text{B}, \text{key}=32\text{B}$):
+
+```bash
+# Using the Legate binary:
+legate hash-password "MySuperSecretPassword"
+
+# Using Podman/Docker container:
+podman run --rm -it ghcr.io/firpic/legate:latest hash-password "MySuperSecretPassword"
+
+# Saving directly to a secret file:
+legate hash-password "MySuperSecretPassword" > /run/secrets/traefik_hash
+chmod 400 /run/secrets/traefik_hash
+```
+
+#### Shell and Compose Escaping Rules:
+- **Bash / Zsh**: Always enclose Argon2id hash literals in single quotes (`'...'`). Double quotes (`"..."`) cause the shell to interpret `$argon2id`, `$v`, `$m`, `$p` as environment variables, corrupting the hash.
+- **Docker / Podman Compose**: The `compose.yaml` parser interpolates `$` by default. You must escape each `$` as `$$` (e.g. `$$argon2id$$v=19$$m=65536,t=3,p=2$$...`). Using `password_hash_file` completely avoids escaping issues.
 
 #### RBAC Evaluation Rules:
 1. `"*"` authorizes any valid subdomain under any domain mapped to the user.
@@ -128,10 +163,13 @@ If no `--config` flag or `CONFIG_FILE` variable is provided, Legate operates in 
 
 | Variable | Required | Default | Description |
 | :--- | :---: | :---: | :--- |
-| `CLOUDFLARE_API_TOKEN` | Conditional\* | — | Scoped Cloudflare API token (`Zone.DNS:Edit`). |
-| `CLOUDFLARE_API_TOKEN_FILE` | Conditional\* | — | File path holding token (ANSSI BP-028 secret mounting). |
+| `CLOUDFLARE_API_TOKEN` | Conditional\* | — | Scoped Cloudflare API token (`Zone.DNS:Edit`). Mutually exclusive with `CLOUDFLARE_API_TOKEN_FILE`. |
+| `CLOUDFLARE_API_TOKEN_FILE` | Conditional\* | — | File path holding token (ANSSI BP-028 secret mounting). Mutually exclusive with `CLOUDFLARE_API_TOKEN`. |
 | `ALLOWED_DOMAIN` | **Yes** | — | Single domain zone allowed (e.g. `example.com`). |
-| `USERS` | Conditional\*\* | — | User accounts (`username:password` or `username:password:subdomains`). |
+| `USERS` | Conditional\*\* | — | User accounts with Argon2id hashes: `username:argon2id_hash` or `username:argon2id_hash:subdomains`. |
+| `USER_<NAME>_PASS` | Conditional\*\* | — | User password as an Argon2id hash (`$argon2id$...`). |
+| `USER_<NAME>_PASS_FILE` | Conditional\*\* | — | File path containing the user's Argon2id hash. |
+| `USER_<NAME>_SUBDOMAINS` | No | `*` | Comma-separated list of allowed subdomains for `USER_<NAME>`. |
 | `PORT` | No | `8080` | ACME challenge listener port. |
 | `BIND_ADDR` | No | `0.0.0.0` | ACME challenge listener bind IP. |
 | `ADMIN_PORT` | No | `9090` | Admin & metrics listener port. |
@@ -140,4 +178,4 @@ If no `--config` flag or `CONFIG_FILE` variable is provided, Legate operates in 
 | `LOG_LEVEL` | No | `info` | Logging verbosity (`debug`, `info`, `warn`, `error`). |
 
 *\* Either `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_API_TOKEN_FILE` is required in env mode.*  
-*\*\* At least one valid user account must be configured.*
+*\*\* At least one valid user account must be configured with a valid Argon2id hash.*

@@ -15,7 +15,15 @@ Before starting, ensure you have:
 
 ## Step 1: Start the Legate Container
 
-Run the Legate container using `podman run`. Legate exposes two separate ports:
+Legate strictly enforces RFC 9106 Argon2id password hashing and rejects plaintext passwords in environment variables.
+
+First, generate an Argon2id hash using Legate's built-in `hash-password` subcommand:
+
+```bash
+HASH=$(podman run --rm ghcr.io/firpic/legate:latest hash-password "SuperSecretPassword123")
+```
+
+Now, launch the Legate container using `podman run`. Legate exposes two separate ports:
 - **`8080` (Challenge Port)**: Authenticated endpoint for reverse proxies (`/present`, `/cleanup`).
 - **`9090` (Admin Port)**: Unauthenticated internal endpoint for monitoring (`/healthz`, `/metrics`).
 
@@ -26,7 +34,7 @@ podman run -d \
   -p 127.0.0.1:9090:9090 \
   -e CLOUDFLARE_API_TOKEN="your-cf-api-token-here" \
   -e ALLOWED_DOMAIN="example.com" \
-  -e USERS="traefik:SuperSecretPassword123" \
+  -e USERS="traefik:${HASH}" \
   -e LOG_LEVEL="debug" \
   ghcr.io/firpic/legate:latest
 ```

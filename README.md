@@ -101,7 +101,23 @@ Legate implements provider integrations using the pure Go standard library with 
 
 ## Quickstart
 
-Run a standalone Legate container with Podman:
+### 1. Generate an Argon2id Password Hash
+
+Legate strictly enforces RFC 9106 Argon2id password hashing ($m=65536, t=3, p=2$). Plaintext passwords in environment variables are strictly forbidden and rejected at startup.
+
+Generate an Argon2id hash using Legate's built-in `hash-password` command:
+
+```bash
+# Using the container image:
+HASH=$(podman run --rm ghcr.io/firpic/legate:latest hash-password "StrongPassword123")
+
+# Or using the local binary:
+HASH=$(./legate hash-password "StrongPassword123")
+```
+
+### 2. Run Legate
+
+Launch a standalone Legate container with Podman:
 
 ```bash
 podman run -d \
@@ -110,9 +126,12 @@ podman run -d \
   -p 127.0.0.1:9090:9090 \
   -e CLOUDFLARE_API_TOKEN="your-cloudflare-api-token" \
   -e ALLOWED_DOMAIN="example.com" \
-  -e USERS="traefik:StrongPassword123" \
+  -e USERS="traefik:${HASH}" \
   ghcr.io/firpic/legate:latest
 ```
+
+> [!NOTE]
+> When passing Argon2id hashes in shell commands, enclose literals in single quotes (`'...'`) so your shell does not interpret the `$` delimiters as shell variable expansions.
 
 Verify operational readiness:
 
@@ -209,18 +228,20 @@ server:
   log_level: "info"
 
 providers:
+  # Direct token or environment variable interpolation
   cf-main:
     type: cloudflare
     api_token: "${CLOUDFLARE_API_TOKEN}"
     zone_id: "${CLOUDFLARE_ZONE_ID}" # optional pre-cached zone
 
+  # Container secret file (recommended for production)
   ionos-prod:
     type: ionos
-    api_key: "${IONOS_API_KEY}"      # format: prefix.secret
+    api_key_file: "/run/secrets/ionos_key"
 
   infomaniak-corp:
     type: infomaniak
-    api_token: "${INFOMANIAK_API_TOKEN}"
+    api_token_file: "/run/secrets/infomaniak_token"
 
 domains:
   example.com:
@@ -231,20 +252,27 @@ domains:
     provider: infomaniak-corp
 
 users:
+  # Direct Argon2id hash (Option A)
   traefik_dmz:
-    password: "${TRAEFIK_PASSWORD}"
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$ZHZ1bmtsZXZhbGlkc2FsdA$YnlF0zPsh8H3R3m5x/l5g8B4o2gC7f6Q9r8u1v2w3x4"
     allowed_subdomains:
       - "*.example.com"
       - "*.mon-domaine.fr"
+
+  # Container secret file (Option B - Recommended for GitOps)
   caddy_internal:
-    password: "${CADDY_PASSWORD}"
+    password_hash_file: "/run/secrets/caddy_hash"
     allowed_subdomains:
       - "*.entreprise.ch"
+
   admin_full:
-    password: "${ADMIN_PASSWORD}"
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$dGVzdHNhbHQxMjM0NTY3OA$B2WvM8iL+9wKqF2l6X2pY1z8v0s3j4h5g6f7e8d9c0b"
     allowed_subdomains:
       - "*"
 ```
+
+> [!IMPORTANT]
+> If passing Argon2id hashes inside a `compose.yaml` file, Docker/Podman Compose will interpret `$` as an environment variable unless escaped as `$$` (e.g. `$$argon2id$$v=19$$m=65536...`). Using `password_hash_file` or a dedicated `legate.yaml` completely bypasses this risk.
 
 Launch with configuration:
 
