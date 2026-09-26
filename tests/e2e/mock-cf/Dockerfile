@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM docker.io/library/golang:1.26-alpine AS builder
 WORKDIR /app
 COPY main.go .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /mock-cf main.go
