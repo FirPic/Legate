@@ -3,8 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
 
 permissions:
   contents: read
@@ -12,7 +18,7 @@ permissions:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,8 +36,16 @@ jobs:
           version: latest
 
   test:
-    name: Test & Coverage
-    runs-on: ubuntu-latest
+    name: Test & Coverage (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            arch: amd64
+          - os: ubuntu-26.04-arm
+            arch: arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -51,7 +65,7 @@ jobs:
 
   vulncheck:
     name: Vulnerability Scan (govulncheck)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

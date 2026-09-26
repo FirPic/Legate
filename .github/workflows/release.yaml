@@ -12,7 +12,7 @@ permissions:
 jobs:
   goreleaser:
     name: Release Binaries (GoReleaser)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
 
   docker:
     name: Build & Push Container Image (GHCR)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
