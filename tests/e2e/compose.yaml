@@ -1,7 +1,7 @@
 services:
   pebble-challtestsrv:
     image: ghcr.io/letsencrypt/pebble-challtestsrv:latest
-    command: ["pebble-challtestsrv", "-http01", "", "-https01", "", "-tlsalpn01", "", "-dnsServer", ":8053", "-management", ":8055"]
+    command: ["pebble-challtestsrv", "-http01=", "-https01=", "-tlsalpn01=", "-dnsserver=:8053", "-management=:8055"]
     networks:
       - e2e-net
 

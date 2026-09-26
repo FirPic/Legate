@@ -50,6 +50,8 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/zones", handleZones)
+	mux.HandleFunc("/zones/", handleZoneRecords)
 	mux.HandleFunc("/client/v4/zones", handleZones)
 	mux.HandleFunc("/client/v4/zones/", handleZoneRecords)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -89,14 +91,20 @@ func handleZones(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleZoneRecords(w http.ResponseWriter, r *http.Request) {
-	// Path format: /client/v4/zones/{zone_id}/dns_records or /client/v4/zones/{zone_id}/dns_records/{record_id}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 4 || parts[3] != "dns_records" {
+	zoneIdx := -1
+	for i, p := range parts {
+		if p == "zones" {
+			zoneIdx = i
+			break
+		}
+	}
+	if zoneIdx == -1 || len(parts) < zoneIdx+3 || parts[zoneIdx+2] != "dns_records" {
 		http.NotFound(w, r)
 		return
 	}
 
-	if r.Method == http.MethodPost && len(parts) == 4 {
+	if r.Method == http.MethodPost && len(parts) == zoneIdx+3 {
 		// Create DNS record
 		var req cfRecordReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -142,9 +150,9 @@ func handleZoneRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == http.MethodDelete && len(parts) == 5 {
+	if r.Method == http.MethodDelete && len(parts) == zoneIdx+4 {
 		// Delete DNS record
-		recID := parts[4]
+		recID := parts[zoneIdx+3]
 		mu.Lock()
 		host, exists := records[recID]
 		delete(records, recID)
