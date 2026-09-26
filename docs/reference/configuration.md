@@ -135,14 +135,14 @@ Each user entry defines credentials and subdomain authorization rules:
 Legate embeds a native hash generator calibrated to RFC 9106 recommended production parameters ($m=65536 \text{ KiB}, t=3, p=2, \text{salt}=16\text{B}, \text{key}=32\text{B}$):
 
 ```bash
-# Using the Legate binary:
-legate hash-password "MySuperSecretPassword"
+# Interactive prompt (recommended - input is masked and never recorded in shell history):
+legate hash-password
 
 # Using Podman/Docker container:
-podman run --rm -it ghcr.io/firpic/legate:latest hash-password "MySuperSecretPassword"
+podman run --rm -ti ghcr.io/firpic/legate:latest hash-password
 
-# Saving directly to a secret file:
-legate hash-password "MySuperSecretPassword" > /run/secrets/traefik_hash
+# Piped from stdin into secret file:
+echo -n "MySuperSecretPassword" | legate hash-password > /run/secrets/traefik_hash
 chmod 400 /run/secrets/traefik_hash
 ```
 

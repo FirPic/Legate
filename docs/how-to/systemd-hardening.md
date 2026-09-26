@@ -50,9 +50,9 @@ users:
 ```
 
 > [!TIP]
-> Generate the Argon2id hash for `password_hash` with:
+> Generate the Argon2id hash for `password_hash` interactively (input is securely masked):
 > ```bash
-> /usr/local/bin/legate hash-password "StrongRandomPassword123"
+> /usr/local/bin/legate hash-password
 > ```
 
 ```bash

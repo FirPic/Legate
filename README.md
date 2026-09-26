@@ -104,14 +104,14 @@ Legate implements provider integrations using the pure Go standard library with 
 
 Legate strictly enforces RFC 9106 Argon2id password hashing ($m=65536, t=3, p=2$). Plaintext passwords in environment variables are strictly forbidden and rejected at startup.
 
-Generate an Argon2id hash using Legate's built-in `hash-password` command:
+Generate an Argon2id hash using Legate's built-in `hash-password` command (input is securely masked and never recorded in shell history):
 
 ```bash
-# Using the container image:
-HASH=$(podman run --rm ghcr.io/firpic/legate:latest hash-password "StrongPassword123")
+# Using the container image (interactive prompt):
+HASH=$(podman run --rm -ti ghcr.io/firpic/legate:latest hash-password)
 
 # Or using the local binary:
-HASH=$(./legate hash-password "StrongPassword123")
+HASH=$(./legate hash-password)
 ```
 
 ### 2. Run Legate

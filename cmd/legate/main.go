@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -20,6 +19,7 @@ import (
 	"github.com/FirPic/legate/internal/config"
 	httpinternal "github.com/FirPic/legate/internal/http"
 	"github.com/FirPic/legate/internal/tracker"
+	"golang.org/x/term"
 )
 
 var (
@@ -251,15 +251,15 @@ func runHashPassword(args []string) {
 			}
 			password = strings.TrimRight(string(data), "\r\n")
 		} else {
-			// Interactive prompt
+			// Interactive terminal prompt with masked input (no echo to console)
 			fmt.Fprint(os.Stderr, "Enter password to hash: ")
-			reader := bufio.NewReader(os.Stdin)
-			line, err := reader.ReadString('\n')
-			if err != nil && !errors.Is(err, io.EOF) {
+			bytePassword, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error reading password: %v\n", err)
 				os.Exit(1)
 			}
-			password = strings.TrimRight(line, "\r\n")
+			password = strings.TrimRight(string(bytePassword), "\r\n")
 		}
 	}
 

@@ -19,8 +19,8 @@ Legate strictly enforces RFC 9106 Argon2id password hashing and rejects plaintex
 
 First, generate an Argon2id hash using Legate's built-in `hash-password` subcommand:
 
-```bash
-HASH=$(podman run --rm ghcr.io/firpic/legate:latest hash-password "SuperSecretPassword123")
+# Interactive prompt (masked input, avoids storing password in shell history):
+HASH=$(podman run --rm -ti ghcr.io/firpic/legate:latest hash-password)
 ```
 
 Now, launch the Legate container using `podman run`. Legate exposes two separate ports:
