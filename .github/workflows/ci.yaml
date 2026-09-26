@@ -109,3 +109,13 @@ jobs:
       - name: Scan container image with Trivy
         run: |
           trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --pkg-types os,library legate:ci-scan
+
+  e2e:
+    name: E2E Integration (Traefik + Pebble + Legate)
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run E2E test suite
+        run: tests/e2e/run-e2e.sh

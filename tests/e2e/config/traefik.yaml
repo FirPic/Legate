@@ -1,0 +1,29 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: DEBUG
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  pebble:
+    acme:
+      email: "test@firpic.fr"
+      caServer: "https://pebble:14000/dir"
+      storage: "/letsencrypt/acme.json"
+      dnsChallenge:
+        provider: "httpreq"
+        delayBeforeCheck: 1s
+        resolvers:
+          - "pebble-challtestsrv:8053"
+
+providers:
+  file:
+    directory: "/etc/traefik/dynamic"
+    watch: true

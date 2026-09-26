@@ -1,0 +1,17 @@
+http:
+  routers:
+    test-app:
+      rule: "Host(`app.test.firpic.fr`)"
+      entryPoints:
+        - "websecure"
+      service: "dummy-service"
+      tls:
+        certResolver: "pebble"
+        domains:
+          - main: "app.test.firpic.fr"
+
+  services:
+    dummy-service:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8080"

@@ -38,6 +38,7 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - tests/e2e
 formatters:
   exclusions:
     generated: lax
@@ -45,3 +46,4 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - tests/e2e

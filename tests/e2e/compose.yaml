@@ -1,0 +1,66 @@
+services:
+  pebble-challtestsrv:
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:latest
+    networks:
+      - e2e-net
+
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    command: pebble -config /test/config/pebble-config.json -dnsserver pebble-challtestsrv:8053
+    environment:
+      - PEBBLE_VA_NOSLEEP=1
+      - PEBBLE_WFE_NONCEREJECT=0
+    depends_on:
+      - pebble-challtestsrv
+    networks:
+      - e2e-net
+
+  mock-cf:
+    build:
+      context: ./mock-cf
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8080
+      - CHALLTESTSRV_URL=http://pebble-challtestsrv:8055
+    depends_on:
+      - pebble-challtestsrv
+    networks:
+      - e2e-net
+
+  legate:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    command: ["run", "--config", "/etc/legate/config.yaml"]
+    volumes:
+      - ./config/legate.yaml:/etc/legate/config.yaml:ro
+    depends_on:
+      - mock-cf
+    networks:
+      - e2e-net
+
+  traefik:
+    image: traefik:v3.3
+    volumes:
+      - ./config/traefik.yaml:/etc/traefik/traefik.yaml:ro
+      - ./config/dynamic.yaml:/etc/traefik/dynamic/dynamic.yaml:ro
+      - ./config/pebble.minica.pem:/etc/ssl/certs/pebble.minica.pem:ro
+      - traefik-acme:/letsencrypt
+    environment:
+      - LEGO_CA_CERTIFICATES=/etc/ssl/certs/pebble.minica.pem
+      - LEGO_CA_SERVER_NAME=pebble
+      - HTTREQ_ENDPOINT=http://legate:8080
+      - HTTREQ_USERNAME=traefik_dmz
+      - HTTREQ_PASSWORD=PebbleE2ETestSecret123!
+    depends_on:
+      - pebble
+      - legate
+    networks:
+      - e2e-net
+
+volumes:
+  traefik-acme:
+
+networks:
+  e2e-net:
+    driver: bridge

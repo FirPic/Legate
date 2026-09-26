@@ -1,0 +1,23 @@
+server:
+  port: "8080"
+  bind_addr: "0.0.0.0"
+  admin_port: "9090"
+  admin_bind_addr: "0.0.0.0"
+  rate_limit_per_minute: 300
+  log_level: "debug"
+
+providers:
+  cf-mock:
+    type: cloudflare
+    api_token: "mock-token-for-e2e"
+    base_url: "http://mock-cf:8080"
+
+domains:
+  test.firpic.fr:
+    provider: cf-mock
+
+users:
+  traefik_dmz:
+    password_hash: "$argon2id$v=19$m=65536,t=3,p=2$pcieLoNTtK3LS+/XCRFNsg$3KXcwrQqDIayNaPdYNcAKP2ys4XSVHGvvgHNIAr3eEA"
+    allowed_subdomains:
+      - "*.test.firpic.fr"
