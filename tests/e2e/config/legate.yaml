@@ -11,6 +11,7 @@ providers:
     type: cloudflare
     api_token: "mock-token-for-e2e"
     base_url: "http://mock-cf:8080"
+    insecure_http: true
 
 domains:
   test.firpic.fr:

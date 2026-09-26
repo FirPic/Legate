@@ -1,6 +1,7 @@
 services:
   pebble-challtestsrv:
     image: ghcr.io/letsencrypt/pebble-challtestsrv:latest
+    command: ["pebble-challtestsrv", "-http01", "", "-https01", "", "-tlsalpn01", "", "-dnsServer", ":8053", "-management", ":8055"]
     networks:
       - e2e-net
 
@@ -49,6 +50,9 @@ services:
     environment:
       - LEGO_CA_CERTIFICATES=/etc/ssl/certs/pebble.minica.pem
       - LEGO_CA_SERVER_NAME=pebble
+      - HTTPREQ_ENDPOINT=http://legate:8080
+      - HTTPREQ_USERNAME=traefik_dmz
+      - HTTPREQ_PASSWORD=PebbleE2ETestSecret123!
       - HTTREQ_ENDPOINT=http://legate:8080
       - HTTREQ_USERNAME=traefik_dmz
       - HTTREQ_PASSWORD=PebbleE2ETestSecret123!

@@ -48,6 +48,7 @@ type ProviderConfig struct {
 	APIKeyFile   string `yaml:"api_key_file,omitempty" json:"api_key_file,omitempty"`
 	ZoneID       string `yaml:"zone_id,omitempty" json:"zone_id,omitempty"`
 	BaseURL      string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	InsecureHTTP bool   `yaml:"insecure_http,omitempty" json:"insecure_http,omitempty"`
 }
 
 // DomainConfig binds a domain zone to a configured provider.
@@ -220,8 +221,8 @@ func LoadFromFile(filePath string) (*Config, error) {
 			if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
 				return nil, fmt.Errorf("provider %q: invalid base_url %q", pName, pCfg.BaseURL)
 			}
-			if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
-				return nil, fmt.Errorf("provider %q: base_url must use https scheme to protect API credentials (got %q)", pName, pCfg.BaseURL)
+			if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" && !pCfg.InsecureHTTP {
+				return nil, fmt.Errorf("provider %q: base_url must use https scheme to protect API credentials (got %q; set insecure_http: true in provider config to allow unencrypted HTTP for local testing)", pName, pCfg.BaseURL)
 			}
 		}
 
