@@ -26,7 +26,7 @@ $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
 $COMPOSE up -d --build
 
 echo "==> Waiting for Traefik to request and obtain ACME certificate from Pebble via Legate..."
-MAX_WAIT_SECONDS=45
+MAX_WAIT_SECONDS=60
 START_TIME=$(date +%s)
 CERT_FOUND=0
 

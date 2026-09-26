@@ -20,9 +20,8 @@ certificatesResolvers:
       dnsChallenge:
         provider: "httpreq"
         propagation:
+          disableChecks: true
           delayBeforeChecks: 1s
-        resolvers:
-          - "pebble-challtestsrv:8053"
 
 providers:
   file:
