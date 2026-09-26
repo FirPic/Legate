@@ -19,7 +19,8 @@ certificatesResolvers:
       storage: "/letsencrypt/acme.json"
       dnsChallenge:
         provider: "httpreq"
-        delayBeforeCheck: 1s
+        propagation:
+          delayBeforeChecks: 1s
         resolvers:
           - "pebble-challtestsrv:8053"
 

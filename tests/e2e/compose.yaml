@@ -6,7 +6,7 @@ services:
 
   pebble:
     image: ghcr.io/letsencrypt/pebble:latest
-    command: pebble -config /test/config/pebble-config.json -dnsserver pebble-challtestsrv:8053
+    command: ["-config", "/test/config/pebble-config.json", "-dnsserver", "pebble-challtestsrv:8053"]
     environment:
       - PEBBLE_VA_NOSLEEP=1
       - PEBBLE_WFE_NONCEREJECT=0
@@ -31,7 +31,7 @@ services:
     build:
       context: ../..
       dockerfile: Containerfile
-    command: ["run", "--config", "/etc/legate/config.yaml"]
+    command: ["--config", "/etc/legate/config.yaml"]
     volumes:
       - ./config/legate.yaml:/etc/legate/config.yaml:ro
     depends_on:

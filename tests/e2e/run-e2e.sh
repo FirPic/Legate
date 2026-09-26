@@ -51,6 +51,10 @@ if [ "$CERT_FOUND" -ne 1 ]; then
     $COMPOSE logs legate >&2 || true
     echo "==> Mock-CF logs:" >&2
     $COMPOSE logs mock-cf >&2 || true
+    echo "==> Pebble logs:" >&2
+    $COMPOSE logs pebble >&2 || true
+    echo "==> Pebble-Challtestsrv logs:" >&2
+    $COMPOSE logs pebble-challtestsrv >&2 || true
     exit 1
 fi
 
