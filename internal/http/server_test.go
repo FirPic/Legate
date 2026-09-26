@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -489,6 +490,70 @@ func TestMultiDomainProviderRouting(t *testing.T) {
 
 	if rrUnk.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for unregistered domain, got %d", rrUnk.Code)
+	}
+}
+
+func TestSecurityHeaders_HSTS(t *testing.T) {
+	srv := &Server{}
+	var executed bool
+	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		executed = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := srv.securityHeadersMiddleware(dummyHandler)
+
+	// Case 1: Plain HTTP without TLS or header
+	reqPlain := httptest.NewRequest(http.MethodGet, "/present", nil)
+	rrPlain := httptest.NewRecorder()
+	handler.ServeHTTP(rrPlain, reqPlain)
+
+	if !executed {
+		t.Fatal("expected handler to execute")
+	}
+	if hsts := rrPlain.Header().Get("Strict-Transport-Security"); hsts != "" {
+		t.Errorf("expected no HSTS on plain HTTP, got %q", hsts)
+	}
+	if nosniff := rrPlain.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Errorf("expected nosniff, got %q", nosniff)
+	}
+
+	// Case 2: Direct TLS
+	reqTLS := httptest.NewRequest(http.MethodGet, "/present", nil)
+	reqTLS.TLS = &tls.ConnectionState{}
+	rrTLS := httptest.NewRecorder()
+	handler.ServeHTTP(rrTLS, reqTLS)
+
+	if hsts := rrTLS.Header().Get("Strict-Transport-Security"); hsts != "max-age=31536000; includeSubDomains" {
+		t.Errorf("expected HSTS header on TLS request, got %q", hsts)
+	}
+
+	// Case 3: Proxied TLS via X-Forwarded-Proto
+	reqProto := httptest.NewRequest(http.MethodGet, "/present", nil)
+	reqProto.Header.Set("X-Forwarded-Proto", "https")
+	rrProto := httptest.NewRecorder()
+	handler.ServeHTTP(rrProto, reqProto)
+
+	if hsts := rrProto.Header().Get("Strict-Transport-Security"); hsts != "max-age=31536000; includeSubDomains" {
+		t.Errorf("expected HSTS header on X-Forwarded-Proto: https, got %q", hsts)
+	}
+}
+
+func TestRecovererMiddleware(t *testing.T) {
+	srv := &Server{}
+	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("deliberate test panic")
+	})
+	handler := srv.recovererMiddleware(panicHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test-panic", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on panic, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "internal server error") {
+		t.Errorf("unexpected body: %s", rr.Body.String())
 	}
 }
 

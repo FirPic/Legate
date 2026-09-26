@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/FirPic/legate/internal/config"
@@ -183,6 +185,7 @@ func (s *Server) recovererMiddleware(next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				slog.Error("recovered from panic in http handler",
 					"error", rec,
+					"stack", string(debug.Stack()),
 					"path", r.URL.Path,
 					"method", r.Method,
 				)
@@ -200,6 +203,9 @@ func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'")
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
