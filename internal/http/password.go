@@ -92,7 +92,13 @@ func VerifyPassword(password, encodedHash string) (bool, error) {
 		return false, ErrInvalidHash
 	}
 
-	computedHash := argon2.IDKey([]byte(password), salt, iterations, memory, threads, uint32(len(expectedHash)))
+	hashLen := len(expectedHash)
+	if hashLen < 16 || hashLen > 512 {
+		return false, ErrInvalidHash
+	}
+
+	// #nosec G115 -- hashLen is verified strictly within [16, 512]
+	computedHash := argon2.IDKey([]byte(password), salt, iterations, memory, threads, uint32(hashLen))
 
 	match := subtle.ConstantTimeCompare(computedHash, expectedHash)
 	return match == 1, nil

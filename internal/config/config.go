@@ -108,8 +108,8 @@ func LoadFromFile(filePath string) (*Config, error) {
 		Users     map[string]UserConfig     `yaml:"users"`
 	}
 
-	if err := yaml.Unmarshal([]byte(expanded), &fileCfg); err != nil {
-		return nil, fmt.Errorf("parse config file %q: %w", filePath, err)
+	if unmarshalErr := yaml.Unmarshal([]byte(expanded), &fileCfg); unmarshalErr != nil {
+		return nil, fmt.Errorf("parse config file %q: %w", filePath, unmarshalErr)
 	}
 
 	cfg := &Config{
@@ -134,7 +134,7 @@ func LoadFromFile(filePath string) (*Config, error) {
 	}
 	if cfg.Server.RateLimitPerMinute <= 0 {
 		rateLimitStr := getEnv("RATE_LIMIT_PER_MINUTE", "60")
-		if rl, err := strconv.Atoi(rateLimitStr); err == nil && rl > 0 {
+		if rl, parseErr := strconv.Atoi(rateLimitStr); parseErr == nil && rl > 0 {
 			cfg.Server.RateLimitPerMinute = rl
 		} else {
 			cfg.Server.RateLimitPerMinute = 60

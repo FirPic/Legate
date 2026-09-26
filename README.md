@@ -5,11 +5,10 @@
 **Lightweight, Zero-Dependency ACME DNS-01 Challenge Gateway**
 
 [![CI](https://github.com/FirPic/legate/actions/workflows/ci.yaml/badge.svg)](https://github.com/FirPic/legate/actions/workflows/ci.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/FirPic/legate)](https://goreportcard.com/report/github.com/FirPic/legate)
+[![Latest Release](https://img.shields.io/github/v/release/FirPic/legate?logo=github&color=blue)](https://github.com/FirPic/legate/releases)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](https://golang.org)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![OCI Container](https://img.shields.io/badge/Container-ghcr.io%2Ffirpic%2Flegate-892CA0?logo=podman&logoColor=white)](https://github.com/FirPic/legate/pkgs/container/legate)
-[![Security Hardened](https://img.shields.io/badge/Security-ANSSI_BP--028_MIE-success.svg)](docs/explanation/security-model.md)
 
 <p align="center">
   <a href="#why-legate">Why Legate?</a> •
