@@ -82,3 +82,30 @@ jobs:
 
       - name: Run govulncheck
         run: govulncheck ./...
+
+  container-scan:
+    name: Container Security (Trivy)
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: 'latest'
+
+      - name: Build local container image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Containerfile
+          load: true
+          tags: legate:ci-scan
+
+      - name: Scan container image with Trivy
+        run: |
+          trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --pkg-types os,library legate:ci-scan

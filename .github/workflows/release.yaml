@@ -65,6 +65,27 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: 'latest'
+
+      - name: Build candidate image for security scan
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Containerfile
+          load: true
+          tags: legate:release-scan
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.meta.outputs.created }}
+
+      - name: Scan release candidate image with Trivy
+        run: |
+          trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --pkg-types os,library legate:release-scan
+
       - name: Build and push OCI image
         uses: docker/build-push-action@v5
         with:
