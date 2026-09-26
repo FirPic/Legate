@@ -309,6 +309,7 @@ func checkHealth(targetURL string, timeout time.Duration) error {
 		Timeout: timeout,
 	}
 
+	// #nosec G704,G107 -- targetURL is strictly internal healthcheck endpoint on localhost/admin addr
 	resp, err := client.Get(targetURL)
 	if err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -93,7 +94,8 @@ func Load(configPath string) (*Config, error) {
 
 // LoadFromFile reads and validates a YAML configuration file with environment variable expansion.
 func LoadFromFile(filePath string) (*Config, error) {
-	raw, err := os.ReadFile(filePath)
+	// #nosec G703,G304 -- configuration file path provided via CLI or system config
+	raw, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
 		return nil, fmt.Errorf("read config file %q: %w", filePath, err)
 	}
@@ -538,7 +540,8 @@ func loadCloudflareToken() (string, error) {
 		return "", errors.New("cannot specify both CLOUDFLARE_API_TOKEN and CLOUDFLARE_API_TOKEN_FILE")
 	}
 	if tokenFile != "" {
-		content, err := os.ReadFile(tokenFile)
+		// #nosec G703,G304 -- secret file path provided via environment variable
+		content, err := os.ReadFile(filepath.Clean(tokenFile))
 		if err != nil {
 			return "", fmt.Errorf("read CLOUDFLARE_API_TOKEN_FILE %q: %w", tokenFile, err)
 		}

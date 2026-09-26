@@ -346,7 +346,7 @@ func formatErrors(errs []cfErrorResponse) string {
 		if i > 0 {
 			sb.WriteString("; ")
 		}
-		sb.WriteString(fmt.Sprintf("[%d] %s", e.Code, e.Message))
+		fmt.Fprintf(&sb, "[%d] %s", e.Code, e.Message)
 	}
 	return sb.String()
 }

@@ -1,40 +1,47 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
   allow-parallel-runners: true
-
 linters:
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - gosec
     - misspell
-    - unconvert
     - revive
-
-linters-settings:
-  govet:
-    enable-all: false
-    enable:
-      - shadow
-  gosec:
-    excludes:
-      - G104 # Errors unhandled in defers/logging
-  revive:
+    - unconvert
+  settings:
+    gosec:
+      excludes:
+        - G104
+    govet:
+      enable:
+        - shadow
+      enable-all: false
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        arguments:
-          - disableStutteringCheck
-
-issues:
-  exclude-dirs:
-    - vendor
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+    paths:
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
