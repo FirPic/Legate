@@ -39,6 +39,6 @@ USER nonroot:nonroot
 EXPOSE 8080 9090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["/usr/local/bin/legate", "--version"]
+    CMD ["/usr/local/bin/legate", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/legate"]

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,9 +32,15 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
-		runHashPassword(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "hash-password":
+			runHashPassword(os.Args[2:])
+			return
+		case "healthcheck":
+			runHealthcheck(os.Args[2:])
+			return
+		}
 	}
 
 	showVersion := flag.Bool("version", false, "Print version information and exit")
@@ -268,5 +275,50 @@ func runHashPassword(args []string) {
 	}
 
 	fmt.Println(hash)
+}
+
+func runHealthcheck(args []string) {
+	fs := flag.NewFlagSet("healthcheck", flag.ExitOnError)
+	urlFlag := fs.String("url", "", "Health check URL (default: derived from ADMIN_BIND_ADDR and ADMIN_PORT or http://127.0.0.1:9090/healthz)")
+	timeoutFlag := fs.Duration("timeout", 3*time.Second, "Health check request timeout")
+	_ = fs.Parse(args)
+
+	targetURL := strings.TrimSpace(*urlFlag)
+	if targetURL == "" {
+		adminHost := os.Getenv("ADMIN_BIND_ADDR")
+		if adminHost == "" || adminHost == "0.0.0.0" || adminHost == "::" {
+			adminHost = "127.0.0.1"
+		}
+		adminPort := os.Getenv("ADMIN_PORT")
+		if adminPort == "" {
+			adminPort = "9090"
+		}
+		targetURL = fmt.Sprintf("http://%s/healthz", net.JoinHostPort(adminHost, adminPort))
+	}
+
+	if err := checkHealth(targetURL, *timeoutFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("healthcheck: ok")
+}
+
+func checkHealth(targetURL string, timeout time.Duration) error {
+	client := &http.Client{
+		Timeout: timeout,
+	}
+
+	resp, err := client.Get(targetURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
