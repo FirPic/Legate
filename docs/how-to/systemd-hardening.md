@@ -168,8 +168,8 @@ ReadOnly=true
 NoNewPrivileges=true
 DropCapability=ALL
 
-# Health check (queried on internal admin port 9090)
-HealthCmd=curl -f http://127.0.0.1:9090/healthz || exit 1
+# Health check (queried on internal admin port 9090 via built-in healthcheck command)
+HealthCmd=/usr/local/bin/legate healthcheck
 HealthInterval=30s
 HealthRetries=3
 
